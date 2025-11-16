@@ -1,0 +1,208 @@
+import taichi as ti
+import numpy as np
+
+
+@ti.func
+def quat_mul(v1, v2):
+    return ti.Vector([
+        v1.x * v2.x - v1.y * v2.y - v1.z * v2.z - v1.w * v2.w,
+        v1.x * v2.y + v2.x * v1.y + v1.z * v2.w - v1.w * v2.z,
+        v1.x * v2.z + v2.x * v1.z + v1.w * v2.y - v1.y * v2.w,
+        v1.x * v2.w + v2.x * v1.w + v1.y * v2.z - v1.z * v2.y
+    ])
+
+@ti.func
+def quat_conj(q):
+    return ti.Vector([q.x, -q.y, -q.z, -q.w])
+
+@ti.func
+def rotate(q, v):
+    q_v = ti.Vector([0.0, v.x, v.y, v.z])
+    return quat_mul(quat_mul(q, q_v), quat_conj(q)).yzw
+
+@ti.func
+def rotate_inv(q, v):
+    return rotate(quat_conj(q), v)
+
+@ti.func
+def dist_triangle(p, a, b, c):
+    ab = b - a
+    ac = c - a
+    ap = p - a
+    d1 = ab.dot(ap)
+    d2 = ac.dot(ap)
+    bp = p - b
+    d3 = ab.dot(bp)
+    d4 = ac.dot(bp)
+    vc = d1 * d4 - d3 * d2
+    cp = p - c
+    d5 = ab.dot(cp)
+    d6 = ac.dot(cp)
+    vb = d5 * d2 - d1 * d6
+    va = d3 * d6 - d5 * d4
+    d = 0.0
+    if d1 <= 0.0 and d2 <= 0.0:
+        d = (p - a).norm()
+    elif d3 >= 0.0 and d4 <= d3:
+        d = (p - b).norm()
+    elif vc <= 0.0 and d1 >= 0.0 and d3 <= 0.0:
+        v = d1 / (d1 - d3)
+        proj = a + v * ab
+        d = (p - proj).norm()
+    elif d6 >= 0.0 and d5 <= d6:
+        d = (p - c).norm()
+    elif vb <= 0.0 and d2 >= 0.0 and d6 <= 0.0:
+        w = d2 / (d2 - d6)
+        proj = a + w * ac
+        d = (p - proj).norm()
+    elif va <= 0.0 and (d4 - d3) >= 0.0 and (d5 - d6) >= 0.0:
+        w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+        proj = b + w * (c - b)
+        d = (p - proj).norm()
+    else:
+        denom = 1.0 / (va + vb + vc)
+        v = vb * denom
+        w = vc * denom
+        proj = a + ab * v + ac * w
+        d = (p - proj).norm()
+    return d
+
+@ti.data_oriented
+class RigidBody:
+
+    def __init__(self, mesh_file: str, scale: float, mass: float, x=ti.Vector([0.0, 0.0, 0.0]), v=ti.Vector([0.0, 0.0, 0.0]),
+                 omega=ti.Vector([0.0, 0.0, 0.0]), q=ti.Vector([1.0, 0.0, 0.0, 0.0]), fixed=False):
+
+        lines = []
+        with open(mesh_file, 'r') as f:
+            lines = f.readlines()
+        _faces = []
+        _vertices = []
+        for line in lines:
+            if line[0] == 'v':
+                parts = line.split()
+                vertex = [float(parts[1]) * scale, float(parts[2]) * scale, float(parts[3]) * scale]
+                _vertices.append(vertex)
+            elif line[0] == 'f':
+                parts = line.split()
+                face = [int(parts[1]) - 1, int(parts[2]) - 1, int(parts[3]) - 1]
+                _faces.append(face)
+
+        self.faces = ti.Vector.field(3, dtype=int, shape=len(_faces))
+        self.vertices = ti.Vector.field(3, dtype=float, shape=len(_vertices))
+
+        self.faces.from_numpy(np.array(_faces, dtype=np.int32))
+        self.vertices.from_numpy(np.array(_vertices, dtype=np.float32))
+
+        self.m = mass
+        self.m_inv = 1.0 / mass
+        self._centralize()
+        self.inertia = self._inertia()
+        self.inertia_inv = self.inertia.inverse()
+        self.fixed = fixed
+
+        self.x = ti.Vector.field(3, dtype=float, shape=())
+        self.v = ti.Vector.field(3, dtype=float, shape=())
+        self.omega = ti.Vector.field(3, dtype=float, shape=())
+        self.q = ti.Vector.field(4, dtype=float, shape=())
+        self.x[None] = x
+        self.v[None] = v
+        self.omega[None] = omega
+        self.q[None] = q
+
+        self.force = ti.Vector.field(3, dtype=float, shape=())
+        self.torque = ti.Vector.field(3, dtype=float, shape=())
+        self.force[None] = ti.Vector([0.0, 0.0, 0.0])
+        self.torque[None] = ti.Vector([0.0, 0.0, 0.0])
+
+        self._rendered_indices = ti.field(dtype=int, shape=len(_faces) * 3)
+        self._rendered_vertices = ti.Vector.field(3, dtype=float, shape=len(_vertices))
+        self._rendered_indices.from_numpy(self.faces.to_numpy().flatten())
+
+        self._update_position()
+
+    @ti.kernel
+    def _centralize(self):
+        cm = ti.Vector.zero(float, 3)
+        area = 0.0
+        for i in ti.grouped(self.faces):
+            A = self.vertices[self.faces[i][0]]
+            B = self.vertices[self.faces[i][1]]
+            C = self.vertices[self.faces[i][2]]
+            da = (B - A).cross(C - A).norm()
+            cm += (A + B + C) * da / 3.0
+            area += da
+        cm /= area
+        for i in ti.grouped(self.vertices):
+            self.vertices[i] -= cm
+
+    @ti.kernel
+    def _inertia(self) -> ti.types.matrix(3, 3, float):
+        I = ti.Matrix.zero(float, 3, 3)
+        area = 0.0
+        for k in ti.grouped(self.faces):
+            A = self.vertices[self.faces[k][0]]
+            B = self.vertices[self.faces[k][1]]
+            C = self.vertices[self.faces[k][2]]
+            da = (B - A).cross(C - A).norm()
+            area += da
+            center = (A + B + C) / 3.0
+            center_square = center.dot(center)
+            for i in range(3):
+                for j in range(3):
+                    if i == j:
+                        I[i, j] += (center_square - center[i] ** 2) * da
+                    else:
+                        I[i, j] -= center[i] * center[j] * da
+        return I * self.m / area
+
+    @ti.kernel
+    def _update_position(self):
+        for i in ti.grouped(self.vertices):
+            rotated_pos = rotate(self.q[None], self.vertices[i])
+            self._rendered_vertices[i] = rotated_pos + self.x[None]
+
+    @ti.func
+    def substep(self, dt: float):
+        if not self.fixed:
+            self.q[None] += dt * 0.5 * quat_mul(
+                self.q[None],
+                ti.Vector([
+                    0.0, self.omega[None].x, self.omega[None].y, self.omega[None].z
+                ])
+            )
+            self.q[None] = self.q[None].normalized()
+            self.omega[None] += dt * self.inertia_inv @ (
+                rotate_inv(self.q[None], self.torque[None]) -
+                ti.math.cross(self.omega[None], self.inertia @ self.omega[None])
+            )
+
+            self.v[None] += dt * self.m_inv * self.force[None]
+            self.x[None] += dt * self.v[None]
+
+    @ti.func
+    def collision(self, p: ti.types.vector(3, float), eps: float=1e-3):
+        p_local = rotate_inv(self.q[None], p - self.x[None])
+        min_dist = float('inf')
+        closest = -1
+        for i in range(self.faces.shape[0]):
+            A = self.vertices[self.faces[i][0]]
+            B = self.vertices[self.faces[i][1]]
+            C = self.vertices[self.faces[i][2]]
+            dist = dist_triangle(p_local, A, B, C)
+            if dist < min_dist:
+                min_dist = dist
+                closest = i
+        collision, normal = False, ti.Vector([0.0, 0.0, 0.0])
+        if min_dist < eps:
+            collision = True
+            normal = (self.vertices[self.faces[closest][1]] - self.vertices[self.faces[closest][0]]).cross(
+                self.vertices[self.faces[closest][2]] - self.vertices[self.faces[closest][0]]
+            ).normalized()
+            normal = rotate(self.q[None], normal)
+        return collision, normal
+
+    def render(self):
+        self._update_position()
+        return self._rendered_vertices, self._rendered_indices
+
