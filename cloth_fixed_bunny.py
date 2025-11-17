@@ -34,9 +34,18 @@ def substep(dt: float):
             cloth.v[i] -= cloth.v[i].dot(normal) * normal
             cloth.x[i] += normal * 1e-3
 
+@ti.kernel
+def generate_random_vec4()-> ti.math.vec4:
+    random_vec = ti.Vector([ti.random() for _ in range(4)])
+    return random_vec.normalized()
+
 current_t = 0.0
 frame_count = 0
 while window.running:
+    if current_t > 1.5:
+        cloth._init_mass_points()
+        bunny.q[None] = generate_random_vec4()
+        current_t = 0
     for i in range(substeps):
         substep(dt)
         current_t += dt
@@ -44,11 +53,9 @@ while window.running:
     camera.lookat(0, 0, 0)
     scene.set_camera(camera)
     scene.point_light(pos=(4, 4, 4), color=(1, 1, 1))
-    vertices, indices = bunny.render()
-    scene.mesh(vertices, indices)
-    vertices, indices, colors = cloth.render()
-    scene.mesh(vertices, indices, per_vertex_color=colors, two_sided=True)
+    bunny.render(scene)
+    cloth.render(scene)
     canvas.scene(scene)
-    window.save_image("output/{:04d}.png".format(frame_count))
+    # window.save_image("output/{:05d}.png".format(frame_count))
     window.show()
     frame_count += 1

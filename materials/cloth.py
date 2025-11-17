@@ -67,7 +67,7 @@ class Cloth:
     def _init_mass_points(self):
         for i, j in self.x:
             self.x[i, j] = [
-                i * self.quad_size - 0.2, 1.0,
+                i * self.quad_size - 0.5, 1.0,
                 j * self.quad_size - 0.5
             ]
             self.v[i, j] = [0.0, 0.0, 0.0]
@@ -90,6 +90,6 @@ class Cloth:
             self.v[i] *= ti.exp(-self.drag_damping * dt)
             self.x[i] += self.v[i] * dt
 
-    def render(self):
+    def render(self, scene):
         self._update_position()
-        return self._rendered_vertices, self._rendered_indices, self._rendered_colors
+        scene.mesh(self._rendered_vertices, self._rendered_indices, per_vertex_color=self._rendered_colors, two_sided=True)

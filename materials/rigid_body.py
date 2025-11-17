@@ -25,6 +25,13 @@ def rotate_inv(q, v):
     return rotate(quat_conj(q), v)
 
 @ti.func
+def dist_aabb(p, bmin, bmax):
+    dx = ti.max(ti.max(bmin.x - p.x, 0.0), p.x - bmax.x)
+    dy = ti.max(ti.max(bmin.y - p.y, 0.0), p.y - bmax.y)
+    dz = ti.max(ti.max(bmin.z - p.z, 0.0), p.z - bmax.z)
+    return ti.sqrt(dx * dx + dy * dy + dz * dz)
+
+@ti.func
 def dist_triangle(p, a, b, c):
     ab = b - a
     ac = c - a
@@ -101,6 +108,8 @@ class RigidBody:
         self.inertia_inv = self.inertia.inverse()
         self.fixed = fixed
 
+        self._build_bvh()
+
         self.x = ti.Vector.field(3, dtype=float, shape=())
         self.v = ti.Vector.field(3, dtype=float, shape=())
         self.omega = ti.Vector.field(3, dtype=float, shape=())
@@ -120,6 +129,88 @@ class RigidBody:
         self._rendered_indices.from_numpy(self.faces.to_numpy().flatten())
 
         self._update_position()
+
+    def _build_bvh(self):
+        n_faces = self.faces.shape[0]
+        n_nodes = 2 * n_faces - 1
+
+        self.bvh_bmin = ti.Vector.field(3, dtype=float, shape=n_nodes)
+        self.bvh_bmax = ti.Vector.field(3, dtype=float, shape=n_nodes)
+        self.bvh_left = ti.field(dtype=int, shape=n_nodes)
+        self.bvh_right = ti.field(dtype=int, shape=n_nodes)
+        self.bvh_face_id = ti.field(dtype=int, shape=n_nodes)
+
+        import numpy as np
+
+        face_centers = []
+        face_bmin = []
+        face_bmax = []
+        vertices_np = self.vertices.to_numpy()
+        faces_np = self.faces.to_numpy()
+
+        for i in range(n_faces):
+            f = faces_np[i]
+            v0, v1, v2 = vertices_np[f[0]], vertices_np[f[1]], vertices_np[f[2]]
+            bmin = np.minimum(np.minimum(v0, v1), v2)
+            bmax = np.maximum(np.maximum(v0, v1), v2)
+            center = (v0 + v1 + v2) / 3.0
+            face_centers.append(center)
+            face_bmin.append(bmin)
+            face_bmax.append(bmax)
+
+        face_centers = np.array(face_centers)
+        face_bmin = np.array(face_bmin)
+        face_bmax = np.array(face_bmax)
+
+        bvh_bmin_np = np.zeros((n_nodes, 3), dtype=np.float32)
+        bvh_bmax_np = np.zeros((n_nodes, 3), dtype=np.float32)
+        bvh_left_np = np.full(n_nodes, -1, dtype=np.int32)
+        bvh_right_np = np.full(n_nodes, -1, dtype=np.int32)
+        bvh_face_id_np = np.full(n_nodes, -1, dtype=np.int32)
+
+        node_counter = [0]
+
+        def _recursive_build(face_indices):
+            node_id = node_counter[0]
+            node_counter[0] += 1
+
+            if len(face_indices) == 1:
+                fid = face_indices[0]
+                bvh_bmin_np[node_id] = face_bmin[fid]
+                bvh_bmax_np[node_id] = face_bmax[fid]
+                bvh_face_id_np[node_id] = fid
+                return node_id
+
+            current_bmin = face_bmin[face_indices].min(axis=0)
+            current_bmax = face_bmax[face_indices].max(axis=0)
+            bvh_bmin_np[node_id] = current_bmin
+            bvh_bmax_np[node_id] = current_bmax
+
+            extent = current_bmax - current_bmin
+            axis = np.argmax(extent)
+
+            centers = face_centers[face_indices]
+            sorted_indices = face_indices[np.argsort(centers[:, axis])]
+
+            mid = len(sorted_indices) // 2
+            left_indices = sorted_indices[:mid]
+            right_indices = sorted_indices[mid:]
+
+            left_child = _recursive_build(left_indices)
+            right_child = _recursive_build(right_indices)
+
+            bvh_left_np[node_id] = left_child
+            bvh_right_np[node_id] = right_child
+
+            return node_id
+
+        _recursive_build(np.arange(n_faces))
+
+        self.bvh_bmin.from_numpy(bvh_bmin_np)
+        self.bvh_bmax.from_numpy(bvh_bmax_np)
+        self.bvh_left.from_numpy(bvh_left_np)
+        self.bvh_right.from_numpy(bvh_right_np)
+        self.bvh_face_id.from_numpy(bvh_face_id_np)
 
     @ti.kernel
     def _centralize(self):
@@ -185,14 +276,50 @@ class RigidBody:
         p_local = rotate_inv(self.q[None], p - self.x[None])
         min_dist = float('inf')
         closest = -1
-        for i in range(self.faces.shape[0]):
-            A = self.vertices[self.faces[i][0]]
-            B = self.vertices[self.faces[i][1]]
-            C = self.vertices[self.faces[i][2]]
-            dist = dist_triangle(p_local, A, B, C)
-            if dist < min_dist:
-                min_dist = dist
-                closest = i
+
+        stack = ti.Vector([0] * 64, dt=int)
+        stack_size = 1
+        stack[0] = 0
+
+        while stack_size > 0:
+            stack_size -= 1
+            node_id = stack[stack_size]
+
+            dist_to_box = dist_aabb(p_local, self.bvh_bmin[node_id], self.bvh_bmax[node_id])
+
+            if dist_to_box < min_dist:
+                face_id = self.bvh_face_id[node_id]
+
+                if face_id >= 0:
+                    A = self.vertices[self.faces[face_id][0]]
+                    B = self.vertices[self.faces[face_id][1]]
+                    C = self.vertices[self.faces[face_id][2]]
+                    dist = dist_triangle(p_local, A, B, C)
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest = face_id
+                else:
+                    left = self.bvh_left[node_id]
+                    right = self.bvh_right[node_id]
+
+                    dist_left = dist_aabb(p_local, self.bvh_bmin[left], self.bvh_bmax[left])
+                    dist_right = dist_aabb(p_local, self.bvh_bmin[right], self.bvh_bmax[right])
+
+                    if dist_left < dist_right:
+                        if dist_right < min_dist:
+                            stack[stack_size] = right
+                            stack_size += 1
+                        if dist_left < min_dist:
+                            stack[stack_size] = left
+                            stack_size += 1
+                    else:
+                        if dist_left < min_dist:
+                            stack[stack_size] = left
+                            stack_size += 1
+                        if dist_right < min_dist:
+                            stack[stack_size] = right
+                            stack_size += 1
+
         collision, normal = False, ti.Vector([0.0, 0.0, 0.0])
         if min_dist < eps:
             collision = True
@@ -202,7 +329,7 @@ class RigidBody:
             normal = rotate(self.q[None], normal)
         return collision, normal
 
-    def render(self):
+    def render(self, scene):
         self._update_position()
-        return self._rendered_vertices, self._rendered_indices
+        scene.mesh(self._rendered_vertices, self._rendered_indices)
 
