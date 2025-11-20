@@ -272,7 +272,7 @@ class RigidBody:
             self.x[None] += dt * self.v[None]
 
     @ti.func
-    def collision(self, p: ti.types.vector(3, float), eps: float=1e-3):
+    def collision(self, p: ti.types.vector(3, float), eps: float=1e-2):
         p_local = rotate_inv(self.q[None], p - self.x[None])
         min_dist = float('inf')
         closest = -1
@@ -328,6 +328,11 @@ class RigidBody:
             ).normalized()
             normal = rotate(self.q[None], normal)
         return collision, normal
+
+    @ti.func
+    def velocity_at_point(self, p):
+        omega_world = rotate(self.q[None], self.omega[None])
+        return self.v[None] + omega_world.cross(p - self.x[None])
 
     def render(self, scene):
         self._update_position()

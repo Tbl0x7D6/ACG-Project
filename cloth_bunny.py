@@ -17,8 +17,7 @@ dt = 1e-4
 substeps = int(1 / 60 // dt)
 gravity = ti.Vector([0.0, -9.8, 0.0])
 
-bunny = RigidBody("objects/bunny.obj", scale=0.5, mass=1.0)
-bunny.fixed = True
+bunny = RigidBody("objects/bunny.obj", scale=0.5, mass=4.0)
 
 quad_size = 1.0 / 128
 cloth = Cloth(k=3e4, mass=1, quad_size=quad_size, num_particles_width=128, num_particles_height=128, dashpot_damping=1e4, drag_damping=1)
@@ -27,24 +26,24 @@ cloth = Cloth(k=3e4, mass=1, quad_size=quad_size, num_particles_width=128, num_p
 def substep(dt: float):
     bunny.substep(dt)
     cloth.substep(dt)
+    bunny.torque[None] = ti.Vector([0.0, 0.0, 0.0])
     for i in ti.grouped(cloth.x):
         cloth.v[i] += gravity * dt
         collision, normal = bunny.collision(cloth.x[i])
         if collision:
-            cloth.v[i] -= cloth.v[i].dot(normal) * normal
+            p = cloth.x[i]
+            v_surface = bunny.velocity_at_point(p)
+            v_rel = cloth.v[i] - v_surface
+            delta_v = ti.max(-v_rel.dot(normal), 0) * normal
+            cloth.v[i] += delta_v
             cloth.x[i] += normal * 1e-3
-
-@ti.kernel
-def generate_random_vec4()-> ti.math.vec4:
-    random_vec = ti.Vector([ti.random() for _ in range(4)])
-    return random_vec.normalized()
+            bunny.torque[None] += (p - bunny.x[None]).cross(-delta_v * cloth.particle_mass / dt)
 
 current_t = 0.0
 frame_count = 0
 while window.running:
-    if current_t > 1.5:
+    if current_t > 2.0:
         cloth._init_mass_points()
-        bunny.q[None] = generate_random_vec4()
         current_t = 0
     for i in range(substeps):
         substep(dt)
