@@ -1,7 +1,7 @@
 import taichi as ti
 import numpy as np
 
-ti.init(arch=ti.cuda)
+ti.init(arch=ti.cuda, device_memory_fraction=0.95)
 
 # MAC grid
 res = 512
@@ -29,6 +29,7 @@ available_particles = ti.field(dtype=ti.i32, shape=(res * res * num_particles_pe
 # level set
 solid_phi = ti.field(dtype=ti.f32, shape=(res, res))
 phi = ti.field(dtype=ti.f32, shape=(res, res))
+dist_from_particle = ti.field(dtype=ti.f32, shape=(res, res, 3, 3))
 phi_new = ti.field(dtype=ti.f32, shape=(res, res))
 
 @ti.func
@@ -119,9 +120,8 @@ v_valid_old = ti.field(dtype=ti.i32, shape=(res, res + 1))
 u_valid = ti.field(dtype=ti.i32, shape=(res + 1, res))
 v_valid = ti.field(dtype=ti.i32, shape=(res, res + 1))
 
-# solve laplace equation by Jacobi iteration for velocity
 @ti.kernel
-def extrapolate():
+def extrapolate_mark_valid():
     for i, j in ti.ndrange(res + 1, res):
         if (i < res and solid_phi[i, j] > 0 and phi[i, j] < 0) or (i > 0 and solid_phi[i - 1, j] > 0 and phi[i - 1, j] < 0):
             u_valid[i, j] = 1
@@ -138,7 +138,8 @@ def extrapolate():
     for i in ti.grouped(v_new):
         v_new[i] = v[i]
 
-    # for _ in range(10):
+@ti.kernel
+def extrapolate_iter():
     for i, j in ti.ndrange(res + 1, res):
         u_valid_old[i, j] = u_valid[i, j]
     for i, j in ti.ndrange(res, res + 1):
@@ -188,6 +189,12 @@ def extrapolate():
         u[i, j] = u_new[i, j]
     for i, j in ti.ndrange(res, res + 1):
         v[i, j] = v_new[i, j]
+
+# solve laplace equation by Jacobi iteration for velocity
+def extrapolate():
+    extrapolate_mark_valid()
+    for _ in range(3):
+        extrapolate_iter()
 
 @ti.func
 def sample_u(x, y):
@@ -295,7 +302,9 @@ def interpolate_phi_grad(x, y):
 @ti.kernel
 def update_level_set():
     for i, j in ti.ndrange(res, res):
-        phi[i, j] = 3 * dx
+        for offset_x in ti.static([-1, 0, 1]):
+            for offset_y in ti.static([-1, 0, 1]):
+                dist_from_particle[i, j, offset_x+1, offset_y+1] = 3 * dx
 
     for i in ti.ndrange(res * res * num_particles_per_cell):
         if available_particles[i] == 1:
@@ -308,7 +317,18 @@ def update_level_set():
                     ny = cell_y + offset_y
                     if 0 <= nx < res and 0 <= ny < res:
                         d = (pos - ti.Vector([(nx + 0.5) * dx, (ny + 0.5) * dx])).norm() - particle_radius
-                        phi[nx, ny] = ti.min(phi[nx, ny], d)
+                        dist_from_particle[nx, ny, offset_x+1, offset_y+1] = d
+
+    for i, j in ti.ndrange(res, res):
+        min_phi = 3 * dx
+        for offset_x in ti.static([-1, 0, 1]):
+            for offset_y in ti.static([-1, 0, 1]):
+                d = dist_from_particle[i, j, offset_x+1, offset_y+1]
+                if d < min_phi:
+                    min_phi = d
+        phi[i, j] = min_phi
+        if solid_phi[i, j] < 0:
+            phi[i, j] = 3 * dx
     # TODO: smooth phi field
     # for i, j in ti.ndrange(res, res):
     #     grad = interpolate_phi_grad((i + 0.5) * dx, (j + 0.5) * dx)
@@ -416,6 +436,14 @@ def apply_pressure_gradient():
                 if solid_phi[i, j - 1] >= 0 and solid_phi[i, j] >= 0:
                     v[i, j] -= dt / (rho * dx) * (p[i, j] - p[i, j - 1])
 
+@ti.kernel
+def volume() -> int:
+    count = 0
+    for i, j in ti.ndrange(res, res):
+        if phi[i, j] < 0 and solid_phi[i, j] > 0:
+            count += 1
+    return count
+
 def substep():
     apply_gravity()
     extrapolate()
@@ -458,6 +486,7 @@ frame_count = 0
 while window.running:
     for _ in range(substeps):
         substep()
+    print("Volume:", volume())
 
     render()
     canvas.set_image(pixels)
