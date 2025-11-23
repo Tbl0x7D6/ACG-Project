@@ -34,14 +34,14 @@ phi_new = ti.field(dtype=ti.f32, shape=(res, res))
 
 @ti.func
 def interpolate_phi(x, y):
-    i = ti.cast(x / dx, ti.i32)
-    j = ti.cast(y / dx, ti.i32)
+    i = ti.cast(x / dx - 0.5, ti.i32)
+    j = ti.cast(y / dx - 0.5, ti.i32)
 
     i = ti.max(0, ti.min(res - 1, i))
     j = ti.max(0, ti.min(res - 1, j))
 
-    fx = (x / dx) - i
-    fy = (y / dx) - j
+    fx = (x / dx - 0.5) - i
+    fy = (y / dx - 0.5) - j
     fx = ti.max(0.0, ti.min(1.0, fx))
     fy = ti.max(0.0, ti.min(1.0, fy))
 
@@ -55,14 +55,14 @@ def interpolate_phi(x, y):
 
 @ti.func
 def interpolate_solid_phi(x, y):
-    i = ti.cast(x / dx, ti.i32)
-    j = ti.cast(y / dx, ti.i32)
+    i = ti.cast(x / dx - 0.5, ti.i32)
+    j = ti.cast(y / dx - 0.5, ti.i32)
 
     i = ti.max(0, ti.min(res - 1, i))
     j = ti.max(0, ti.min(res - 1, j))
 
-    fx = (x / dx) - i
-    fy = (y / dx) - j
+    fx = (x / dx - 0.5) - i
+    fy = (y / dx - 0.5) - j
     fx = ti.max(0.0, ti.min(1.0, fx))
     fy = ti.max(0.0, ti.min(1.0, fy))
 
