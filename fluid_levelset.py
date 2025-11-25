@@ -2,6 +2,8 @@ import taichi as ti
 
 ti.init(arch=ti.cuda, device_memory_fraction=0.95)
 
+USE_REFLECTION = False
+
 # MAC grid
 res = 512
 dt = 1e-4
@@ -315,7 +317,7 @@ def reinit_levelset():
     phi.copy_from(phi_1)
 
 @ti.kernel
-def advect():
+def advect(dt: float):
     for i, j in ti.ndrange(res + 1, res):
         x = i * dx
         y = (j + 0.5) * dx
@@ -340,7 +342,7 @@ def advect():
         v[i, j] = v_new[i, j]
 
 @ti.kernel
-def constraint():
+def constrain():
     for i, j in ti.ndrange(res, res):
         if i < res - 1 and solid_phi[i + 1, j] < 0 and u[i + 1, j] > 0:
             u[i + 1, j] = 0.0
@@ -400,6 +402,15 @@ def volume() -> int:
             count += 1
     return count
 
+def project():
+    compute_div()
+    for _ in range(jacobi_iters):
+        pressure_jacobi()
+    apply_pressure_gradient()
+
+u_half = ti.field(dtype=ti.f32, shape=(res + 1, res))
+v_half = ti.field(dtype=ti.f32, shape=(res, res + 1))
+
 counter = 0
 def substep():
     global counter
@@ -408,12 +419,24 @@ def substep():
     advect_levelset()
     if counter % 30 == 0:
         reinit_levelset()
-    advect()
-    constraint()
-    compute_div()
-    for _ in range(jacobi_iters):
-        pressure_jacobi()
-    apply_pressure_gradient()
+    if USE_REFLECTION:
+        advect(dt / 2)
+        u_half.copy_from(u_new)
+        v_half.copy_from(v_new)
+        project()
+
+        @ti.kernel
+        def reflect():
+            for i in ti.grouped(u):
+                u[i] = 2 * u[i] - u_half[i]
+            for i in ti.grouped(v):
+                v[i] = 2 * v[i] - v_half[i]
+        reflect()
+        advect(dt / 2)
+    else:
+        advect(dt)
+        project()
+    constrain()
     counter += 1
 
 @ti.kernel
