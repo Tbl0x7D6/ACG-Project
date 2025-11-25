@@ -28,25 +28,48 @@ phi_1 = ti.field(dtype=ti.f32, shape=(res, res))
 phi_2 = ti.field(dtype=ti.f32, shape=(res, res))
 
 @ti.func
+def cubic_interp(v0, v1, v2, v3, f):
+    return v1 + 0.5 * f * (v2 - v0 + f * (2.0 * v0 - 5.0 * v1 + 4.0 * v2 - v3 + f * (3.0 * (v1 - v2) + v3 - v0)))
+
+@ti.func
 def interpolate_phi(x, y):
+    # i = ti.cast(x / dx - 0.5, ti.i32)
+    # j = ti.cast(y / dx - 0.5, ti.i32)
+
+    # i = ti.max(0, ti.min(res - 1, i))
+    # j = ti.max(0, ti.min(res - 1, j))
+
+    # fx = (x / dx - 0.5) - i
+    # fy = (y / dx - 0.5) - j
+    # fx = ti.max(0.0, ti.min(1.0, fx))
+    # fy = ti.max(0.0, ti.min(1.0, fy))
+
+    # i_next = ti.min(i + 1, res - 1)
+    # j_next = ti.min(j + 1, res - 1)
+
+    # return (phi[i, j] * (1 - fx) * (1 - fy) +
+    #         phi[i_next, j] * fx * (1 - fy) +
+    #         phi[i, j_next] * (1 - fx) * fy +
+    #         phi[i_next, j_next] * fx * fy)
+    
+    # must use sharp cubic interpolation to avoid mass loss
     i = ti.cast(x / dx - 0.5, ti.i32)
     j = ti.cast(y / dx - 0.5, ti.i32)
 
-    i = ti.max(0, ti.min(res - 1, i))
-    j = ti.max(0, ti.min(res - 1, j))
+    i = ti.max(1, ti.min(res - 2, i))
+    j = ti.max(1, ti.min(res - 2, j))
 
     fx = (x / dx - 0.5) - i
     fy = (y / dx - 0.5) - j
     fx = ti.max(0.0, ti.min(1.0, fx))
     fy = ti.max(0.0, ti.min(1.0, fy))
 
-    i_next = ti.min(i + 1, res - 1)
-    j_next = ti.min(j + 1, res - 1)
+    col0 = cubic_interp(phi[i - 1, j - 1], phi[i, j - 1], phi[i + 1, j - 1], phi[i + 2, j - 1], fx)
+    col1 = cubic_interp(phi[i - 1, j    ], phi[i, j    ], phi[i + 1, j    ], phi[i + 2, j    ], fx)
+    col2 = cubic_interp(phi[i - 1, j + 1], phi[i, j + 1], phi[i + 1, j + 1], phi[i + 2, j + 1], fx)
+    col3 = cubic_interp(phi[i - 1, j + 2], phi[i, j + 2], phi[i + 1, j + 2], phi[i + 2, j + 2], fx)
 
-    return (phi[i, j] * (1 - fx) * (1 - fy) +
-            phi[i_next, j] * fx * (1 - fy) +
-            phi[i, j_next] * (1 - fx) * fy +
-            phi[i_next, j_next] * fx * fy)
+    return cubic_interp(col0, col1, col2, col3, fy)
 
 @ti.func
 def interpolate_solid_phi(x, y):
@@ -91,9 +114,9 @@ def init():
             solid_phi[i, j] = 1.0
 
     for i, j in ti.ndrange(res, res):
-        # r = ((i - res / 4) ** 2 + (j - res / 4) ** 2) ** 0.5 * dx
-        # phi[i, j] = r - 0.1
-        phi[i, j] = max(i * dx - 0.5, j * dx - 0.9, -(i * dx - 0.2), -(j * dx - 0.2))
+        r = ((i - res / 4) ** 2 + (j - res / 4) ** 2) ** 0.5 * dx
+        phi[i, j] = r - 0.05
+        # phi[i, j] = max(i * dx - 0.5, j * dx - 0.9, -(i * dx - 0.2), -(j * dx - 0.2))
 
 @ti.kernel
 def apply_gravity():
@@ -398,7 +421,7 @@ def substep():
     apply_gravity()
     extrapolate()
     advect_levelset()
-    if counter % 20 == 0:
+    if counter % 30 == 0:
         reinit_levelset()
     advect()
     constraint()
