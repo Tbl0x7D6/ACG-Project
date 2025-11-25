@@ -32,27 +32,8 @@ def cubic_interp(v0, v1, v2, v3, f):
     return v1 + 0.5 * f * (v2 - v0 + f * (2.0 * v0 - 5.0 * v1 + 4.0 * v2 - v3 + f * (3.0 * (v1 - v2) + v3 - v0)))
 
 @ti.func
-def interpolate_phi(x, y):
-    # i = ti.cast(x / dx - 0.5, ti.i32)
-    # j = ti.cast(y / dx - 0.5, ti.i32)
-
-    # i = ti.max(0, ti.min(res - 1, i))
-    # j = ti.max(0, ti.min(res - 1, j))
-
-    # fx = (x / dx - 0.5) - i
-    # fy = (y / dx - 0.5) - j
-    # fx = ti.max(0.0, ti.min(1.0, fx))
-    # fy = ti.max(0.0, ti.min(1.0, fy))
-
-    # i_next = ti.min(i + 1, res - 1)
-    # j_next = ti.min(j + 1, res - 1)
-
-    # return (phi[i, j] * (1 - fx) * (1 - fy) +
-    #         phi[i_next, j] * fx * (1 - fy) +
-    #         phi[i, j_next] * (1 - fx) * fy +
-    #         phi[i_next, j_next] * fx * fy)
-    
-    # must use sharp cubic interpolation to avoid mass loss
+def interpolate_phi(phi, x, y):
+    # MUST use sharp cubic interpolation to avoid mass loss
     i = ti.cast(x / dx - 0.5, ti.i32)
     j = ti.cast(y / dx - 0.5, ti.i32)
 
@@ -115,7 +96,7 @@ def init():
 
     for i, j in ti.ndrange(res, res):
         r = ((i - res / 4) ** 2 + (j - res / 4) ** 2) ** 0.5 * dx
-        phi[i, j] = r - 0.05
+        phi[i, j] = r - 0.1
         # phi[i, j] = max(i * dx - 0.5, j * dx - 0.9, -(i * dx - 0.2), -(j * dx - 0.2))
 
 @ti.kernel
@@ -268,9 +249,13 @@ def advect_levelset():
     for i, j in ti.ndrange(res, res):
         pos = ti.Vector([(i + 0.5) * dx, (j + 0.5) * dx])
         back_pos = rk2_trace(pos.x, pos.y, -dt)
-        pos_aux = rk2_trace(back_pos.x, back_pos.y, dt)
-        back_pos = back_pos + 0.5 * (pos - pos_aux)
-        phi_1[i, j] = interpolate_phi(back_pos.x, back_pos.y)
+        phi_1[i, j] = interpolate_phi(phi, back_pos.x, back_pos.y)
+    # for i, j in ti.ndrange(res, res):
+    #     pos = ti.Vector([(i + 0.5) * dx, (j + 0.5) * dx])
+    #     fwd_pos = rk2_trace(pos.x, pos.y, dt)
+    #     phi_2[i, j] = interpolate_phi(phi_1, fwd_pos.x, fwd_pos.y)
+    # for i, j in ti.ndrange(res, res):
+    #     phi[i, j] = phi_1[i, j] + 0.5 * (phi[i, j] - phi_2[i, j])
     for i, j in ti.ndrange(res, res):
         phi[i, j] = phi_1[i, j]
 
@@ -431,6 +416,21 @@ def substep():
     apply_pressure_gradient()
     counter += 1
 
+@ti.kernel
+def add_drop():
+    x = 0.5 + (ti.random() * 2 - 1) * 0.3
+    y = 0.5
+    for i, j in ti.ndrange(res, res):
+        r = ti.sqrt(((i + 0.5) * dx - x) ** 2 + ((j + 0.5) * dx - y) ** 2)
+        drop_phi = r - 0.05
+        if drop_phi < phi[i, j]:
+            phi[i, j] = drop_phi
+        if r < 0.05:
+            u[i + 1, j] = 0.0
+            u[i, j] = 0.0
+            v[i, j + 1] = 0.0
+            v[i, j] = 0.0
+
 init()
 
 window = ti.ui.Window("2D Fluid Simulation", (512, 512))
@@ -451,11 +451,15 @@ def render():
 
 frame_count = 0
 while window.running:
+    if frame_count == 900:
+        break
     for _ in range(substeps):
         substep()
+    if frame_count % 90 == 0 and frame_count != 0:
+        add_drop()
     print("Volume:", volume())
     render()
     canvas.set_image(pixels)
-    # window.save_image("output/{:05d}.png".format(frame_count))
+    window.save_image("output/{:05d}.png".format(frame_count))
     window.show()
     frame_count += 1
