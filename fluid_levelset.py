@@ -1,6 +1,7 @@
 import taichi as ti
 
-ti.init(arch=ti.cuda, device_memory_fraction=0.95)
+# ti.init(arch=ti.cuda, device_memory_fraction=0.95)
+ti.init(arch=ti.cuda)
 
 USE_REFLECTION = False
 
@@ -9,7 +10,6 @@ res = 512
 dt = 1e-4
 dtau = 0.001
 substeps = int(1 / 60 // dt)
-jacobi_iters = 50
 
 dx = 1.0 / res
 rho = 1000.0
@@ -20,8 +20,14 @@ u_new = ti.field(dtype=ti.f32, shape=(res + 1, res))
 v_new = ti.field(dtype=ti.f32, shape=(res, res + 1))
 
 p = ti.field(dtype=ti.f32, shape=(res, res))
-p_new = ti.field(dtype=ti.f32, shape=(res, res))
-div = ti.field(dtype=ti.f32, shape=(res, res))
+r = ti.field(dtype=ti.f32, shape=(res, res))
+p_cg = ti.field(dtype=ti.f32, shape=(res, res))
+Ap = ti.field(dtype=ti.f32, shape=(res, res))
+
+A_diag = ti.field(dtype=ti.f32, shape=(res, res))
+A_plus_i = ti.field(dtype=ti.f32, shape=(res, res))
+A_plus_j = ti.field(dtype=ti.f32, shape=(res, res))
+b = ti.field(dtype=ti.f32, shape=(res, res))
 
 # level set
 solid_phi = ti.field(dtype=ti.f32, shape=(res, res))
@@ -87,8 +93,6 @@ def init():
 
     for i in ti.grouped(p):
         p[i] = 0.0
-        p_new[i] = 0.0
-        div[i] = 0.0
 
     for i, j in ti.ndrange(res, res):
         if i < res // 16 or i > res * 15 / 16 or j < res // 16 or j > res * 15 / 16:
@@ -354,31 +358,113 @@ def constrain():
             v[i, j] = 0.0
 
 @ti.kernel
-def compute_div():
+def build_matrix():
     for i, j in ti.ndrange(res, res):
-        div[i, j] = ((u[i + 1, j] - u[i, j]) + (v[i, j + 1] - v[i, j])) / dx
+        b[i, j] = 0.0
+    for i, j in ti.ndrange(res, res):
+        A_diag[i, j] = 0.0
+        A_plus_i[i, j] = 0.0
+        A_plus_j[i, j] = 0.0
+        if phi[i, j] <= 0 and solid_phi[i, j] > 0:
+            if i > 0 and solid_phi[i - 1, j] > 0:
+                A_diag[i, j] += 1.0
+                b[i, j] += u[i, j]
+            if i < res - 1 and solid_phi[i + 1, j] > 0:
+                A_diag[i, j] += 1.0
+                b[i, j] -= u[i + 1, j]
+            if j > 0 and solid_phi[i, j - 1] > 0:
+                A_diag[i, j] += 1.0
+                b[i, j] += v[i, j]
+            if j < res - 1 and solid_phi[i, j + 1] > 0:
+                A_diag[i, j] += 1.0
+                b[i, j] -= v[i, j + 1]
+
+            if i < res - 1 and phi[i + 1, j] <= 0 and solid_phi[i + 1, j] > 0:
+                A_plus_i[i, j] = -1.0
+            if j < res - 1 and phi[i, j + 1] <= 0 and solid_phi[i, j + 1] > 0:
+                A_plus_j[i, j] = -1.0
 
 @ti.kernel
-def pressure_jacobi():
+def init_pressure_zero():
     for i, j in ti.ndrange(res, res):
-        if phi[i, j] > 0 and solid_phi[i, j] > 0:
-            p_new[i, j] = 0.0
-        elif solid_phi[i, j] < 0:
-            if i < res // 16:
-                p_new[i, j] = p[i + 1, j]
-            elif i > res * 15 / 16:
-                p_new[i, j] = p[i - 1, j]
-            elif j < res // 16:
-                p_new[i, j] = p[i, j + 1]
-            elif j > res * 15 / 16:
-                p_new[i, j] = p[i, j - 1]
-        else:
-            p_new[i, j] = (p[i - 1, j] + p[i + 1, j] +
-                           p[i, j - 1] + p[i, j + 1] -
-                           rho * dx * dx * div[i, j] / dt) * 0.25
+        p[i, j] = 0.0
 
+@ti.kernel
+def compute_residual():
     for i, j in ti.ndrange(res, res):
-        p[i, j] = p_new[i, j]
+        Ap_val = A_diag[i, j] * p[i, j]
+        if i < res - 1:
+            Ap_val += A_plus_i[i, j] * p[i + 1, j]
+        if i > 0:
+            Ap_val += A_plus_i[i - 1, j] * p[i - 1, j]
+        if j < res - 1:
+            Ap_val += A_plus_j[i, j] * p[i, j + 1]
+        if j > 0:
+            Ap_val += A_plus_j[i, j - 1] * p[i, j - 1]
+        r[i, j] = b[i, j] - Ap_val
+
+@ti.kernel
+def compute_Ap():
+    for i, j in ti.ndrange(res, res):
+        Ap_val = A_diag[i, j] * p_cg[i, j]
+        if i < res - 1:
+            Ap_val += A_plus_i[i, j] * p_cg[i + 1, j]
+        if i > 0:
+            Ap_val += A_plus_i[i - 1, j] * p_cg[i - 1, j]
+        if j < res - 1:
+            Ap_val += A_plus_j[i, j] * p_cg[i, j + 1]
+        if j > 0:
+            Ap_val += A_plus_j[i, j - 1] * p_cg[i, j - 1]
+        Ap[i, j] = Ap_val
+
+@ti.kernel
+def init_search_dirction():
+    for i, j in ti.ndrange(res, res):
+        p_cg[i, j] = r[i, j]
+
+@ti.kernel
+def dot_product_kernel(x: ti.template(), y: ti.template()) -> ti.f32:
+    sum_val = 0.0
+    for i, j in ti.ndrange(res, res):
+        sum_val += x[i, j] * y[i, j]
+    return sum_val
+
+@ti.kernel
+def update_pressure(alpha: ti.f32):
+    for i, j in ti.ndrange(res, res):
+        if phi[i, j] <= 0 and solid_phi[i, j] > 0:
+            p[i, j] += alpha * p_cg[i, j]
+
+@ti.kernel
+def update_residual(alpha: ti.f32):
+    for i, j in ti.ndrange(res, res):
+        if phi[i, j] <= 0 and solid_phi[i, j] > 0:
+            r[i, j] -= alpha * Ap[i, j]
+
+@ti.kernel
+def update_search_direction(beta: ti.f32):
+    for i, j in ti.ndrange(res, res):
+        if phi[i, j] <= 0 and solid_phi[i, j] > 0:
+            p_cg[i, j] = r[i, j] + beta * p_cg[i, j]
+
+def CG_solve(max_iters=15):
+    init_pressure_zero()
+    build_matrix()
+    compute_residual()
+    init_search_dirction()
+    rtr_old = dot_product_kernel(r, r)
+    for _ in range(max_iters):
+        compute_Ap()
+        pAp = dot_product_kernel(p_cg, Ap)
+        alpha = rtr_old / (pAp + 1e-9)
+        update_pressure(alpha)
+        update_residual(alpha)
+        rtr_new = dot_product_kernel(r, r)
+        if rtr_new < res * res * 1e-9:
+            break
+        beta = rtr_new / (rtr_old + 1e-9)
+        update_search_direction(beta)
+        rtr_old = rtr_new
 
 @ti.kernel
 def apply_pressure_gradient():
@@ -387,12 +473,12 @@ def apply_pressure_gradient():
         if i > 0 and i < res:
             if phi[i - 1, j] < 0 or phi[i, j] < 0:
                 if solid_phi[i - 1, j] >= 0 and solid_phi[i, j] >= 0:
-                    u[i, j] -= dt / (rho * dx) * (p[i, j] - p[i - 1, j])
+                    u[i, j] -= p[i, j] - p[i - 1, j]
     for i, j in ti.ndrange(res, res + 1):
         if j > 0 and j < res:
             if phi[i, j - 1] < 0 or phi[i, j] < 0:
                 if solid_phi[i, j - 1] >= 0 and solid_phi[i, j] >= 0:
-                    v[i, j] -= dt / (rho * dx) * (p[i, j] - p[i, j - 1])
+                    v[i, j] -= p[i, j] - p[i, j - 1]
 
 @ti.kernel
 def volume() -> int:
@@ -403,9 +489,7 @@ def volume() -> int:
     return count
 
 def project():
-    compute_div()
-    for _ in range(jacobi_iters):
-        pressure_jacobi()
+    CG_solve()
     apply_pressure_gradient()
 
 u_half = ti.field(dtype=ti.f32, shape=(res + 1, res))
