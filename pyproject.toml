@@ -3,8 +3,9 @@ name = "acg-project"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
+    "bpy>=5.0.0",
     "scikit-image>=0.25.2",
     "taichi==1.6.0",
 ]

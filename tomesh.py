@@ -1,13 +1,27 @@
 from pathlib import Path
-from typing import Sequence, Tuple
+from typing import Any, Sequence, Tuple
 
 import numpy as np
 from skimage import measure
 
-RESOLUTION = 64  # grid resolution along each axis
-INPUT_PATH = Path("input_0000.txt")
-OUTPUT_PATH = Path("output.ply")
-UPSAMPLE_FACTOR = 8  # target spacing is 1/8 of original cell length
+RESOLUTION = 256  # grid resolution along each axis
+INPUT_PATH = Path("input.txt")
+SOLID_INPUT_PATH = Path("solid_phi.txt")
+OUTPUT_PATH = Path("output_remesh_2.ply")
+UPSAMPLE_FACTOR = 2  # target spacing is 1/2 of original cell length
+
+def _ensure_float32_ndarray(field: Any) -> np.ndarray:
+    """Return a float32 ndarray view for numpy arrays, lists, or Taichi fields."""
+
+    if hasattr(field, "to_numpy"):
+        field = field.to_numpy()
+    elif hasattr(field, "numpy"):
+        field = field.numpy()
+
+    array = np.asarray(field, dtype=np.float32)
+    if array.ndim != 3:
+        raise ValueError("Expected a 3D volume when converting to ndarray")
+    return array
 
 
 def load_volume(path: Path, res: int) -> np.ndarray:
@@ -118,10 +132,29 @@ def run_marching_cubes(
     return verts, faces
 
 
-def build_mesh(volume: np.ndarray, upsample_factor: int) -> Tuple[np.ndarray, np.ndarray]:
-    """Extract the water surface mesh at higher sampling density."""
+def combine_water_and_solid(level_set: np.ndarray, solid_phi: np.ndarray) -> np.ndarray:
+    """Clamp the water sdf with the solid sdf so the resulting field stays outside solids."""
 
-    sub_volume, offset = extract_active_region(volume)
+    level_set = _ensure_float32_ndarray(level_set)
+    solid_phi = _ensure_float32_ndarray(solid_phi)
+
+    if level_set.shape != solid_phi.shape:
+        raise ValueError(
+            "Water level set and solid sdf must have identical shapes to combine them"
+        )
+
+    # Water occupies the intersection between the water sdf (<= 0) and the complement of solids.
+    combined = np.maximum(level_set, -solid_phi)
+    return combined.astype(np.float32, copy=False)
+
+
+def build_mesh(level_set: np.ndarray, solid_phi: np.ndarray, upsample_factor: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Extract a watertight water surface mesh that includes water-air and water-solid interfaces."""
+
+    level_set = _ensure_float32_ndarray(level_set)
+    solid_phi = _ensure_float32_ndarray(solid_phi)
+    combined_volume = combine_water_and_solid(level_set, solid_phi)
+    sub_volume, offset = extract_active_region(combined_volume)
     refined = upsample_volume(sub_volume, upsample_factor)
     spacing = tuple(1.0 / upsample_factor for _ in range(3))
     origin = tuple(float(val) for val in offset)
@@ -151,13 +184,12 @@ def write_ply(path: Path, vertices: np.ndarray, faces: np.ndarray) -> None:
         for tri in faces:
             f.write(f"3 {tri[0]} {tri[1]} {tri[2]}\n")
 
-
-def main(volume, output_path) -> None:
-    # volume = load_volume(INPUT_PATH, RESOLUTION)
-    vertices, faces = build_mesh(volume, UPSAMPLE_FACTOR)
+def main(water_volume: np.ndarray, solid_volume: np.ndarray, output_path: Path) -> None:
+    vertices, faces = build_mesh(water_volume, solid_volume, UPSAMPLE_FACTOR)
     write_ply(Path(output_path), vertices, faces)
 
 
 if __name__ == "__main__":
-    output_path = OUTPUT_PATH
-    main(load_volume(INPUT_PATH, RESOLUTION), output_path)
+    water = load_volume(INPUT_PATH, RESOLUTION)
+    solid = load_volume(SOLID_INPUT_PATH, RESOLUTION)
+    main(water, solid, OUTPUT_PATH)
