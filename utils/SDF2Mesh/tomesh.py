@@ -10,8 +10,8 @@ from subdivision import loop_subdivision
 
 
 # File paths
-INPUT_PATH = Path("./tomesh/phi_00060.npy")
-OUTPUT_PATH = Path("./tomesh/output_060.ply")
+INPUT_PATH = "./tomesh/phi_00060.npy"
+OUTPUT_PATH = "./tomesh/output_060.ply"
 
 # Mesh parameters
 RESOLUTION = 256
@@ -66,7 +66,8 @@ def write_ply(path: Path, vertices: np.ndarray, faces: np.ndarray) -> None:
             f.write(f"3 {tri[0]} {tri[1]} {tri[2]}\n")
 
 
-def export(volume, output_path) -> None:
+def export_mesh(volume: np.ndarray, output_path: str) -> None:
+    """Export mesh from volume data to PLY file."""
     output_path = Path(output_path)
     smoothed_volume = gaussian(volume, sigma=1.0)
     verts, faces, _, _ = measure.marching_cubes(smoothed_volume.astype(np.float32), level=0.0, step_size=2)
@@ -91,5 +92,10 @@ def export(volume, output_path) -> None:
     write_ply(output_path, vertices, faces)
 
 
+def export(input_path: str, output_path: str) -> None:
+    """Entry point for exporting mesh."""
+    volume = load_npy_volume(Path(input_path))
+    export_mesh(volume, output_path)
+
 if __name__ == "__main__":
-    export(load_npy_volume(INPUT_PATH), OUTPUT_PATH)
+    export(INPUT_PATH, OUTPUT_PATH)
