@@ -4,16 +4,18 @@ ti.init(arch=ti.cuda, device_memory_fraction=0.95)
 
 USE_REFLECTION = False
 
-N1 = 128
-N2 = 128
-N3 = 128
-dt = 1e-4
+N1 = 256
+N2 = 256
+N3 = 256
+dt = 2e-5
 dtau = 0.001
-substeps = int(1 / 60 // dt)
 
-boundary_thickness = 3
+fps = 120
+substeps = int(1.0 / fps // dt)
 
-dx = 1.0 / 128
+boundary_thickness = 6
+
+dx = 1.0 / 256
 rho = 1000.0
 
 vx = ti.field(dtype=ti.f32, shape=(N1 + 1, N2, N3))
@@ -121,8 +123,14 @@ def init():
             solid_phi[i, j, k] = 1.0
 
     for i, j, k in ti.ndrange(N1, N2, N3):
-        r = ((i - N1 / 3) ** 2 + (j - N2 / 2) ** 2 + (k - N3 / 2) ** 2) ** 0.5 * dx
+        r = ((i - N1 / 2) ** 2 + (j - N2 / 2) ** 2 + (k - N3 / 2) ** 2) ** 0.5 * dx
         phi[i, j, k] = r - 0.2
+
+        phi_bottom = max(j * dx - 0.1, (boundary_thickness - j) * dx, 
+                        (i - N1 + boundary_thickness) * dx, (boundary_thickness - i) * dx,
+                        (k - N3 + boundary_thickness) * dx, (boundary_thickness - k) * dx)
+
+        phi[i, j, k] = min(phi[i, j, k], phi_bottom)
         # phi[i, j, k] = max(i * dx - 0.5, j * dx - 0.9, -(i * dx - 0.2), -(j * dx - 0.2))
 
     for i, j, k in ti.ndrange(N1, N2, N3):
@@ -857,7 +865,7 @@ def substep():
 @ti.kernel
 def add_drop():
     x = 0.5 + (ti.random() * 2 - 1) * 0.3
-    y = 0.5
+    y = 0.75
     z = 0.5 + (ti.random() * 2 - 1) * 0.3
     radius = 0.1
     for i, j, k in ti.ndrange(N1, N2, N3):
@@ -882,7 +890,7 @@ canvas.set_background_color((0.2, 0.2, 0.2))
 scene = ti.ui.Scene()
 camera = ti.ui.Camera()
 
-particles = ti.Vector.field(3, dtype=ti.f32, shape=(N1 * N2 * N3))
+particles = ti.Vector.field(3, dtype=ti.f32, shape=(N1 * N2 * N3 // 3 + 1))
 
 current_t = 0.0
 
@@ -899,25 +907,29 @@ def render():
     for i, j, k in ti.ndrange(N1, N2, N3):
         pos = ti.Vector([i, j, k]) * dx
         index = i * N2 * N3 + j * N3 + k
-        particles[index] = pos if (phi_1[i, j, k] < 0 and solid_phi[i, j, k] > 0) else ti.Vector([3, 3, 3])
+        if index % 3 == 0:
+            particles[index // 3] = pos if (phi_1[i, j, k] < 0 and solid_phi[i, j, k] > 0) else ti.Vector([3, 3, 3])
 
 def export(count):
-    import tomesh
-    phi_np = phi.to_numpy()
-    tomesh.main(phi_np, solid_phi, f"plys/mesh_{count:05d}.ply")
+    # import tomesh
+    # phi_np = phi.to_numpy()
+    # tomesh.main(phi_np, solid_phi, f"plys/mesh_{count:05d}.ply")
+    import numpy as np
+    np.save(f"levelset/phi_{count:05d}", phi.to_numpy())
 
 frame_count = 0
-while window.running:
+while window.running and frame_count < fps * 5:
     for _ in range(substeps):
         substep()
-        if counter % 30 == 0:
-            print("Substep completed: ", counter)
+        if counter % (fps // 2) == 0:
+            print("[INFO] Substep completed: ", counter)
         current_t += dt
 
-    if frame_count % 30 == 0 and frame_count > 0:
+    if frame_count % (fps * 5 // 6) == 0 and frame_count > 0:
         add_drop()
 
-    print("Volume: ", volume(), " Frame: ", frame_count)
+    print("[INFO] Frame: ", frame_count)
+    print("[DEBUG] Volume: ", volume())
     render()
 
     camera.position(1.8, 1.8, 1.8)
