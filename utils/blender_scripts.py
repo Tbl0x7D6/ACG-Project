@@ -15,12 +15,13 @@ def remesh():
     target_object.select_set(True)
     bpy.context.view_layer.objects.active = target_object
     
-    mesh = target_object.data
+    # 2 Cast shadow caustics
+    bpy.context.object.cycles.is_caustics_caster = True
     
-    # 2. Shade auto smooth
-    bpy.ops.object.shade_auto_smooth(use_auto_smooth=True, angle=radians(90))
+    # 3. Shade auto smooth
+    bpy.ops.object.shade_auto_smooth(use_auto_smooth=True, angle=radians(30))
     
-    # 3. Assign material
+    # 4. Assign material
     material = bpy.data.materials.get("Material.010")
     target_object.data.materials.clear()
     target_object.data.materials.append(material)
