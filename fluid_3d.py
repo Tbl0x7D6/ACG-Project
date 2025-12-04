@@ -41,9 +41,21 @@ phi = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
 phi_1 = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
 phi_2 = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
 
-# volume of fluid
-vof = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
-vof_1 = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
+# volume control (PI controller)
+correct_volume = ti.field(dtype=ti.f32, shape=())
+current_volume = ti.field(dtype=ti.f32, shape=())
+err = ti.field(dtype=ti.f32, shape=())
+err_int = ti.field(dtype=ti.f32, shape=())
+zeta = 2.0
+kp = 2.3 / (1 / 10)
+ki = (kp / (2 * zeta)) ** 2
+
+@ti.kernel
+def calc_volume():
+    count = 0.0
+    for i, j, k in ti.ndrange(N1, N2, N3):
+        count += heaviside(phi[i, j, k])
+    current_volume[None] = count
 
 @ti.func
 def heaviside(phi_val):
@@ -54,7 +66,7 @@ def heaviside(phi_val):
     elif phi_val > epsilon:
         h = 0.0
     else:
-        h = 0.5 * (1.0 - phi_val / epsilon)
+        h = 0.5 - 0.75 * (phi_val / epsilon) + 0.25 * (phi_val / epsilon) ** 3
     return h
 
 @ti.func
@@ -123,7 +135,7 @@ def init():
             solid_phi[i, j, k] = 1.0
 
     for i, j, k in ti.ndrange(N1, N2, N3):
-        r = ((i - N1 / 2) ** 2 + (j - N2 / 2) ** 2 + (k - N3 / 2) ** 2) ** 0.5 * dx
+        r = ((i - N1 / 3) ** 2 + (j - N2 / 3) ** 2 + (k - N3 / 2) ** 2) ** 0.5 * dx
         phi[i, j, k] = r - 0.2
 
         phi_bottom = max(j * dx - 0.1, (boundary_thickness - j) * dx, 
@@ -133,15 +145,17 @@ def init():
         phi[i, j, k] = min(phi[i, j, k], phi_bottom)
         # phi[i, j, k] = max(i * dx - 0.5, j * dx - 0.9, -(i * dx - 0.2), -(j * dx - 0.2))
 
-    for i, j, k in ti.ndrange(N1, N2, N3):
-        vof[i, j, k] = heaviside(phi[i, j, k])
+def init_volume():
+    calc_volume()
+    correct_volume[None] = current_volume[None]
+    err[None] = 0.0
+    err_int[None] = 0.0
 
 @ti.kernel
 def apply_gravity():
     g = 9.81
     for i, j, k in ti.ndrange(N1, N2 + 1, N3):
-        # if phi[i, j - 1, k] < 0 or phi[i, j, k] < 0 and solid_phi[i, j - 1, k] > 0 and solid_phi[i, j, k] > 0:
-        if vof[i, j, k] > 1e-6 and solid_phi[i, j - 1, k] > 0 and solid_phi[i, j, k] > 0:
+        if phi[i, j - 1, k] < 0 or phi[i, j, k] < 0 and solid_phi[i, j - 1, k] > 0 and solid_phi[i, j, k] > 0:
             vy[i, j, k] -= g * dt
 
 vx_valid_old = ti.field(dtype=ti.i32, shape=(N1 + 1, N2, N3))
@@ -386,55 +400,6 @@ def rk2_trace(x, y, z, dt):
     return ti.Vector([x_back, y_back, z_back])
 
 @ti.kernel
-def advect_vof():
-    for i, j, k in ti.ndrange(N1, N2, N3):
-        if solid_phi[i, j, k] > 0:
-            u_right = vx[i + 1, j, k]
-            c_upwind_right = ti.select(u_right > 0.0, vof[i, j, k], vof[i + 1, j, k]) if i < N1 - 1 else vof[i, j, k]
-            f_right = u_right * c_upwind_right * dt / dx
-
-            if solid_phi[i + 1, j, k] < 0:
-                f_right = 0.0
-
-            u_left = vx[i, j, k]
-            c_upwind_left = ti.select(u_left > 0.0, vof[i - 1, j, k], vof[i, j, k]) if i > 0 else vof[i, j, k]
-            f_left = u_left * c_upwind_left * dt / dx
-
-            if solid_phi[i - 1, j, k] < 0:
-                f_left = 0.0
-
-            v_up = vy[i, j + 1, k]
-            c_upwind_up = ti.select(v_up > 0.0, vof[i, j, k], vof[i, j + 1, k]) if j < N2 - 1 else vof[i, j, k]
-            f_up = v_up * c_upwind_up * dt / dx
-            
-            if solid_phi[i, j + 1, k] < 0:
-                f_up = 0.0
-                
-            v_down = vy[i, j, k]
-            c_upwind_down = ti.select(v_down > 0.0, vof[i, j - 1, k], vof[i, j, k]) if j > 0 else vof[i, j, k]
-            f_down = v_down * c_upwind_down * dt / dx
-            
-            if solid_phi[i, j - 1, k] < 0:
-                f_down = 0.0
-
-            w_front = vz[i, j, k + 1]
-            c_upwind_front = ti.select(w_front > 0.0, vof[i, j, k], vof[i, j, k + 1]) if k < N3 - 1 else vof[i, j, k]
-            f_front = w_front * c_upwind_front * dt / dx
-            
-            if solid_phi[i, j, k + 1] < 0:
-                f_front = 0.0
-                
-            w_back = vz[i, j, k]
-            c_upwind_back = ti.select(w_back > 0.0, vof[i, j, k - 1], vof[i, j, k]) if k > 0 else vof[i, j, k]
-            f_back = w_back * c_upwind_back * dt / dx
-            
-            if solid_phi[i, j, k - 1] < 0:
-                f_back = 0.0
-
-            new_val = vof[i, j, k] + f_left - f_right + f_down - f_up + f_back - f_front
-            vof_1[i, j, k] = max(0.0, min(1.0, new_val))
-
-@ti.kernel
 def advect_levelset():
     for i, j, k in ti.ndrange(N1, N2, N3):
         pos = ti.Vector([(i + 0.5) * dx, (j + 0.5) * dx, (k + 0.5) * dx])
@@ -448,26 +413,6 @@ def advect_levelset():
     #     phi[i, j, k] = phi_1[i, j, k] + 0.5 * (phi[i, j, k] - phi_2[i, j, k])
     for i, j, k in ti.ndrange(N1, N2, N3):
         phi[i, j, k] = phi_1[i, j, k]
-
-@ti.kernel
-def clsvof():
-    for i, j, k in ti.ndrange(N1, N2, N3):
-        c_val = vof[i, j, k]
-        p_val = phi[i, j, k]
-
-        if c_val > 0.01 and c_val < 0.99:
-            epsilon = 1.5 * dx
-
-            target_phi = epsilon * (1.0 - 2.0 * c_val)
-            
-            rate = 0.5  # relaxation factor
-            phi[i, j, k] = p_val * (1 - rate) + target_phi * rate
-
-        elif c_val >= 0.99 and phi[i, j, k] > 0:
-            phi[i, j, k] = -0.5 * dx
-        elif c_val <= 0.01 and phi[i, j, k] < 0:
-            phi[i, j, k] = 0.5 * dx
-
 
 @ti.kernel
 def reinit_levelset_iter():
@@ -672,7 +617,7 @@ def constrain():
             vz[i, j, k] = 0.0
 
 @ti.kernel
-def build_matrix():
+def build_matrix(volume_correction: ti.types.f32):
     for i, j, k in ti.ndrange(N1, N2, N3):
         b[i, j, k] = 0.0
     for i, j, k in ti.ndrange(N1, N2, N3):
@@ -699,6 +644,8 @@ def build_matrix():
             if k < N3 - 1 and solid_phi[i, j, k + 1] > 0:
                 A_diag[i, j, k] += 1.0
                 b[i, j, k] -= vz[i, j, k + 1]
+
+            b[i, j, k] += volume_correction
 
             if i < N1 - 1 and phi[i + 1, j, k] <= 0 and solid_phi[i + 1, j, k] > 0:
                 A_plus_i[i, j, k] = -1.0
@@ -770,11 +717,16 @@ def update_search_direction(beta: ti.f32):
             p_cg[i, j, k] = r[i, j, k] + beta * p_cg[i, j, k]
 
 def CG_solve(max_iters=15):
+    calc_volume()
+    err[None] = current_volume[None] / correct_volume[None] - 1.0
+    err_int[None] += err[None] * dt
+    c = -(kp * err[None] + ki * err_int[None]) / (1 + err[None])
+
     init_pressure_zero()
     # phi_normal_field()
     # calculate_kappa()
     # apply_surface_tension()
-    build_matrix()
+    build_matrix(c)
     compute_residual()
     init_search_dirction()
     rtr_old = dot_product_kernel(r, r)
@@ -812,13 +764,6 @@ def apply_pressure_gradient():
                     vz[i, j, k] -= p[i, j, k] - p[i, j, k - 1]
                     # vz[i, j, k] *= 1 - magic_number
 
-@ti.kernel
-def volume() -> int:
-    count = 0.0
-    for i, j, k in ti.ndrange(N1, N2, N3):
-        count += vof[i, j, k]
-    return count
-
 def project():
     CG_solve()
     apply_pressure_gradient()
@@ -832,13 +777,9 @@ def substep():
     global counter
     apply_gravity()
     extrapolate()
-    advect_vof()
     advect_levelset()
-    phi.copy_from(phi_1)
-    vof.copy_from(vof_1)
-    clsvof()
-    # if counter % int(0.006 / dt) == 0:
-    #     reinit_levelset()
+    if counter % int(0.006 / dt) == 0:
+        reinit_levelset()
     if USE_REFLECTION:
         advect(dt / 2)
         vx_half.copy_from(vx_new)
@@ -873,7 +814,6 @@ def add_drop():
         drop_phi = r - radius
         if drop_phi < phi[i, j, k]:
             phi[i, j, k] = drop_phi
-            vof[i, j, k] = heaviside(phi[i, j, k])
         if r < radius:
             vx[i + 1, j, k] = 0.0
             vx[i, j, k] = 0.0
@@ -882,7 +822,12 @@ def add_drop():
             vz[i, j, k + 1] = 0.0
             vz[i, j, k] = 0.0
 
+    delta_V = 4.0 / 3.0 * 3.1415 * radius * radius * radius / (dx * dx * dx)
+    correct_volume[None] += delta_V
+    current_volume[None] += delta_V
+
 init()
+init_volume()
 
 window = ti.ui.Window("3D Fluid Simulation", (800, 800))
 canvas = window.get_canvas()
@@ -908,7 +853,7 @@ def render():
         pos = ti.Vector([i, j, k]) * dx
         index = i * N2 * N3 + j * N3 + k
         if index % 3 == 0:
-            particles[index // 3] = pos if (phi_1[i, j, k] < 0 and solid_phi[i, j, k] > 0) else ti.Vector([3, 3, 3])
+            particles[index // 3] = pos if (phi[i, j, k] < 0 and solid_phi[i, j, k] > 0) else ti.Vector([3, 3, 3])
 
 def export(count):
     # import tomesh
@@ -929,7 +874,7 @@ while window.running and frame_count < fps * 5:
         add_drop()
 
     print("[INFO] Frame: ", frame_count)
-    print("[DEBUG] Volume: ", volume())
+    print("[DEBUG] Volume: ", current_volume[None])
     render()
 
     camera.position(1.8, 1.8, 1.8)
@@ -942,7 +887,7 @@ while window.running and frame_count < fps * 5:
     
     canvas.scene(scene)
     window.show()
-    # window.save_image("output/{:05d}.png".format(frame_count))
+    window.save_image("output/{:05d}.png".format(frame_count))
     export(frame_count)
     frame_count += 1
 
