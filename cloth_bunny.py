@@ -17,7 +17,7 @@ dt = 1e-4
 substeps = int(1 / 60 // dt)
 gravity = ti.Vector([0.0, -9.8, 0.0])
 
-bunny = RigidBody("objects/bunny.obj", scale=0.5, mass=4.0)
+bunny = RigidBody("objects/bunny.obj", scale=0.5, mass=4.0, fixed=True)
 
 quad_size = 1.0 / 128
 cloth = Cloth(k=3e4, mass=1, quad_size=quad_size, num_particles_width=128, num_particles_height=128, dashpot_damping=1e4, drag_damping=1)
@@ -39,6 +39,14 @@ def substep(dt: float):
             cloth.x[i] += normal * 1e-3
             bunny.torque[None] += (p - bunny.x[None]).cross(-delta_v * cloth.particle_mass / dt)
 
+def quat_mul(v1, v2):
+    return ti.Vector([
+        v1.x * v2.x - v1.y * v2.y - v1.z * v2.z - v1.w * v2.w,
+        v1.x * v2.y + v2.x * v1.y + v1.z * v2.w - v1.w * v2.z,
+        v1.x * v2.z + v2.x * v1.z + v1.w * v2.y - v1.y * v2.w,
+        v1.x * v2.w + v2.x * v1.w + v1.y * v2.z - v1.z * v2.y
+    ])
+
 current_t = 0.0
 frame_count = 0
 while window.running:
@@ -48,6 +56,17 @@ while window.running:
     for i in range(substeps):
         substep(dt)
         current_t += dt
+    mouse = window.get_cursor_pos()
+
+    # set bunny orientation
+    angle_x = (mouse[1] - 0.5) * 3.14159 * -1.5
+    angle_y = (mouse[0] - 0.5) * 3.14159 * 1.5
+    qx = ti.Vector([ti.cos(angle_x / 2), ti.sin(angle_x / 2), 0.0, 0.0])
+    qy = ti.Vector([ti.cos(angle_y / 2), 0.0, ti.sin(angle_y / 2), 0.0])
+    last_q = bunny.q[None]
+    bunny.q[None] = quat_mul(qy, qx).normalized()
+    bunny.omega[None] = 2 * (bunny.q[None] - last_q).yzw / (dt * substeps)
+
     camera.position(2, 2, 2)
     camera.lookat(0, 0, 0)
     scene.set_camera(camera)
