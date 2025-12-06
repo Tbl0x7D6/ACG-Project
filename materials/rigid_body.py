@@ -1,5 +1,6 @@
 import taichi as ti
 import numpy as np
+from . import load_mesh
 
 
 @ti.func
@@ -78,22 +79,9 @@ def dist_triangle(p, a, b, c):
 class RigidBody:
 
     def __init__(self, mesh_file: str, scale: float, mass: float, x=ti.Vector([0.0, 0.0, 0.0]), v=ti.Vector([0.0, 0.0, 0.0]),
-                 omega=ti.Vector([0.0, 0.0, 0.0]), q=ti.Vector([1.0, 0.0, 0.0, 0.0]), fixed=False):
+                 omega=ti.Vector([0.0, 0.0, 0.0]), q=ti.Vector([1.0, 0.0, 0.0, 0.0]), fixed: bool=False, use_sdf: bool=True, sdf_resolution: int=128):
 
-        lines = []
-        with open(mesh_file, 'r') as f:
-            lines = f.readlines()
-        _faces = []
-        _vertices = []
-        for line in lines:
-            if line[0] == 'v':
-                parts = line.split()
-                vertex = [float(parts[1]) * scale, float(parts[2]) * scale, float(parts[3]) * scale]
-                _vertices.append(vertex)
-            elif line[0] == 'f':
-                parts = line.split()
-                face = [int(parts[1]) - 1, int(parts[2]) - 1, int(parts[3]) - 1]
-                _faces.append(face)
+        _vertices, _faces = load_mesh.loader(mesh_file, scale)
 
         self.faces = ti.Vector.field(3, dtype=int, shape=len(_faces))
         self.vertices = ti.Vector.field(3, dtype=float, shape=len(_vertices))
@@ -109,6 +97,16 @@ class RigidBody:
         self.fixed = fixed
 
         self._build_bvh()
+
+        self.use_sdf = use_sdf
+        if use_sdf:
+            self.sdf_resolution = sdf_resolution
+            self.sdf = ti.field(dtype=float, shape=(sdf_resolution, sdf_resolution, sdf_resolution))
+            self.sdf_1 = ti.field(dtype=float, shape=(sdf_resolution, sdf_resolution, sdf_resolution))
+            self.sdf_2 = ti.field(dtype=float, shape=(sdf_resolution, sdf_resolution, sdf_resolution))
+            self._build_sdf()
+
+        self.collision = self.collision_sdf if use_sdf else self.collision_bvh
 
         self.x = ti.Vector.field(3, dtype=float, shape=())
         self.v = ti.Vector.field(3, dtype=float, shape=())
@@ -139,8 +137,6 @@ class RigidBody:
         self.bvh_left = ti.field(dtype=int, shape=n_nodes)
         self.bvh_right = ti.field(dtype=int, shape=n_nodes)
         self.bvh_face_id = ti.field(dtype=int, shape=n_nodes)
-
-        import numpy as np
 
         face_centers = []
         face_bmin = []
@@ -213,6 +209,183 @@ class RigidBody:
         self.bvh_face_id.from_numpy(bvh_face_id_np)
 
     @ti.kernel
+    def _reinit_iter(self):
+        # Godunov Hamiltonian
+        dx = self.extent.x / self.sdf_resolution
+        dtau = 0.5 * dx
+        res = self.sdf_resolution
+
+        for i, j, k in ti.ndrange(res, res, res):
+            if i == 0 or i == res - 1 or j == 0 or j == res - 1 or k == 0 or k == res - 1:
+                if i == 0:
+                    self.sdf_2[i, j, k] = self.sdf_1[i + 1, j, k]
+                elif i == res - 1:
+                    self.sdf_2[i, j, k] = self.sdf_1[i - 1, j, k]
+                elif j == 0:
+                    self.sdf_2[i, j, k] = self.sdf_1[i, j + 1, k]
+                elif j == res - 1:
+                    self.sdf_2[i, j, k] = self.sdf_1[i, j - 1, k]
+                elif k == 0:
+                    self.sdf_2[i, j, k] = self.sdf_1[i, j, k + 1]
+                else:
+                    self.sdf_2[i, j, k] = self.sdf_1[i, j, k - 1]
+            else:
+                phi_0 = self.sdf[i, j, k]
+                s = phi_0 / ti.sqrt(phi_0 * phi_0 + dx * dx)
+
+                dx_minus = (self.sdf_1[i, j, k] - self.sdf_1[i - 1, j, k]) / dx
+                dx_plus = (self.sdf_1[i + 1, j, k] - self.sdf_1[i, j, k]) / dx
+                dy_minus = (self.sdf_1[i, j, k] - self.sdf_1[i, j - 1, k]) / dx
+                dy_plus = (self.sdf_1[i, j + 1, k] - self.sdf_1[i, j, k]) / dx
+                dz_minus = (self.sdf_1[i, j, k] - self.sdf_1[i, j, k - 1]) / dx
+                dz_plus = (self.sdf_1[i, j, k + 1] - self.sdf_1[i, j, k]) / dx
+
+                grad_sq_x = 0.0
+                grad_sq_y = 0.0
+                grad_sq_z = 0.0
+
+                if phi_0 > 0:
+                    grad_sq_x = ti.max(ti.max(dx_minus, 0.0) ** 2, ti.min(dx_plus, 0.0) ** 2)
+                    grad_sq_y = ti.max(ti.max(dy_minus, 0.0) ** 2, ti.min(dy_plus, 0.0) ** 2)
+                    grad_sq_z = ti.max(ti.max(dz_minus, 0.0) ** 2, ti.min(dz_plus, 0.0) ** 2)
+                else:
+                    grad_sq_x = ti.max(ti.min(dx_minus, 0.0) ** 2, ti.max(dx_plus, 0.0) ** 2)
+                    grad_sq_y = ti.max(ti.min(dy_minus, 0.0) ** 2, ti.max(dy_plus, 0.0) ** 2)
+                    grad_sq_z = ti.max(ti.min(dz_minus, 0.0) ** 2, ti.max(dz_plus, 0.0) ** 2)
+
+                grad_norm = ti.sqrt(grad_sq_x + grad_sq_y + grad_sq_z)
+                self.sdf_2[i, j, k] = self.sdf_1[i, j, k] - dtau * s * (grad_norm - 1.0)
+
+        for i, j, k in ti.ndrange(res, res, res):
+            self.sdf_1[i, j, k] = self.sdf_2[i, j, k]
+
+    def _reinit_sdf(self, n_iters: int = 50):
+        self.sdf_1.copy_from(self.sdf)
+        for _ in range(n_iters):
+            self._reinit_iter()
+        self.sdf.copy_from(self.sdf_1)
+
+    @ti.kernel
+    def _init_sdf(self):
+        res = self.sdf_resolution
+        for i, j, k in ti.ndrange(res, res, res):
+            t = ti.Vector([
+                (i + 0.5) / res,
+                (j + 0.5) / res,
+                (k + 0.5) / res
+            ])
+            p_local = self.bmin + t * self.extent
+
+            # Query distance using BVH
+            min_dist, closest = self._query_dist_bvh(p_local)
+            self.sdf[i, j, k] = min_dist
+
+    @ti.kernel
+    def _mark_sdf_sign(self):
+        # Mark sign using ray casting
+        res = self.sdf_resolution
+        for i, j, k in ti.ndrange(res, res, res):
+            t = ti.Vector([
+                (i + 0.5) / res,
+                (j + 0.5) / res,
+                (k + 0.5) / res
+            ])
+            p_local = self.bmin + t * self.extent
+
+            dir = ti.Vector([1.0, 0.0, 0.0])
+            count = 0
+            for f in ti.ndrange(self.faces.shape[0]):
+                A = self.vertices[self.faces[f][0]]
+                B = self.vertices[self.faces[f][1]]
+                C = self.vertices[self.faces[f][2]]
+
+                # Moller-Trumbore intersection
+                edge1 = B - A
+                edge2 = C - A
+                h = dir.cross(edge2)
+                a = edge1.dot(h)
+                if -1e-6 < a < 1e-6:
+                    continue
+                f_inv = 1.0 / a
+                s = p_local - A
+                u = f_inv * s.dot(h)
+                if u < 0.0 or u > 1.0:
+                    continue
+                q = s.cross(edge1)
+                v = f_inv * dir.dot(q)
+                if v < 0.0 or u + v > 1.0:
+                    continue
+                t_hit = f_inv * edge2.dot(q)
+                if t_hit > 1e-6:
+                    count += 1
+            if count % 2 == 1:
+                self.sdf[i, j, k] = -self.sdf[i, j, k]
+
+    def _build_sdf(self):
+        # aabb of the mesh
+        vertices_np = self.vertices.to_numpy()
+        bmin = np.min(vertices_np, axis=0)
+        bmax = np.max(vertices_np, axis=0)
+        bmin -= 0.1 * (bmax - bmin)
+        bmax += 0.1 * (bmax - bmin)
+        self.bmin = ti.Vector(bmin)
+        self.bmax = ti.Vector(bmax)
+        self.extent = self.bmax - self.bmin
+        self._init_sdf()
+        self._mark_sdf_sign()
+        self._reinit_sdf()
+
+    @ti.func
+    def interpolate_sdf(self, p: ti.types.vector(3, float)) -> float:
+        p_local = rotate_inv(self.q[None], p - self.x[None])
+        p_grid = (p_local - self.bmin) / self.extent * self.sdf_resolution - ti.Vector([0.5, 0.5, 0.5])
+
+        res = self.sdf_resolution
+        i = ti.cast(ti.floor(p_grid.x), int)
+        j = ti.cast(ti.floor(p_grid.y), int)
+        k = ti.cast(ti.floor(p_grid.z), int)
+
+        dist = 0.0
+
+        if i < 0 or i >= res - 1 or j < 0 or j >= res - 1 or k < 0 or k >= res - 1:
+            dist = 1e6
+        else:
+            fx = p_grid.x - i
+            fy = p_grid.y - j
+            fz = p_grid.z - k
+
+            c000 = self.sdf[i, j, k]
+            c100 = self.sdf[i + 1, j, k]
+            c010 = self.sdf[i, j + 1, k]
+            c110 = self.sdf[i + 1, j + 1, k]
+            c001 = self.sdf[i, j, k + 1]
+            c101 = self.sdf[i + 1, j, k + 1]
+            c011 = self.sdf[i, j + 1, k + 1]
+            c111 = self.sdf[i + 1, j + 1, k + 1]
+
+            c00 = c000 * (1 - fx) + c100 * fx
+            c01 = c001 * (1 - fx) + c101 * fx
+            c10 = c010 * (1 - fx) + c110 * fx
+            c11 = c011 * (1 - fx) + c111 * fx
+
+            c0 = c00 * (1 - fy) + c10 * fy
+            c1 = c01 * (1 - fy) + c11 * fy
+
+            dist = c0 * (1 - fz) + c1 * fz
+
+        return dist
+
+    @ti.func
+    def interpolate_sdf_gradient(self, p: ti.types.vector(3, float)) -> ti.types.vector(3, float):
+        dx = self.extent.x / self.sdf_resolution * 0.5
+        grad = ti.Vector([
+            self.interpolate_sdf(p + ti.Vector([dx, 0.0, 0.0])) - self.interpolate_sdf(p - ti.Vector([dx, 0.0, 0.0])),
+            self.interpolate_sdf(p + ti.Vector([0.0, dx, 0.0])) - self.interpolate_sdf(p - ti.Vector([0.0, dx, 0.0])),
+            self.interpolate_sdf(p + ti.Vector([0.0, 0.0, dx])) - self.interpolate_sdf(p - ti.Vector([0.0, 0.0, dx]))
+        ]) / (2.0 * dx)
+        return grad.normalized()
+
+    @ti.kernel
     def _centralize(self):
         cm = ti.Vector.zero(float, 3)
         area = 0.0
@@ -272,8 +445,7 @@ class RigidBody:
             self.x[None] += dt * self.v[None]
 
     @ti.func
-    def collision(self, p: ti.types.vector(3, float), eps: float=1e-2):
-        p_local = rotate_inv(self.q[None], p - self.x[None])
+    def _query_dist_bvh(self, p):
         min_dist = float('inf')
         closest = -1
 
@@ -285,7 +457,7 @@ class RigidBody:
             stack_size -= 1
             node_id = stack[stack_size]
 
-            dist_to_box = dist_aabb(p_local, self.bvh_bmin[node_id], self.bvh_bmax[node_id])
+            dist_to_box = dist_aabb(p, self.bvh_bmin[node_id], self.bvh_bmax[node_id])
 
             if dist_to_box < min_dist:
                 face_id = self.bvh_face_id[node_id]
@@ -294,7 +466,7 @@ class RigidBody:
                     A = self.vertices[self.faces[face_id][0]]
                     B = self.vertices[self.faces[face_id][1]]
                     C = self.vertices[self.faces[face_id][2]]
-                    dist = dist_triangle(p_local, A, B, C)
+                    dist = dist_triangle(p, A, B, C)
                     if dist < min_dist:
                         min_dist = dist
                         closest = face_id
@@ -302,8 +474,8 @@ class RigidBody:
                     left = self.bvh_left[node_id]
                     right = self.bvh_right[node_id]
 
-                    dist_left = dist_aabb(p_local, self.bvh_bmin[left], self.bvh_bmax[left])
-                    dist_right = dist_aabb(p_local, self.bvh_bmin[right], self.bvh_bmax[right])
+                    dist_left = dist_aabb(p, self.bvh_bmin[left], self.bvh_bmax[left])
+                    dist_right = dist_aabb(p, self.bvh_bmin[right], self.bvh_bmax[right])
 
                     if dist_left < dist_right:
                         if dist_right < min_dist:
@@ -319,6 +491,13 @@ class RigidBody:
                         if dist_right < min_dist:
                             stack[stack_size] = right
                             stack_size += 1
+        return min_dist, closest
+
+    @ti.func
+    def collision_bvh(self, p: ti.types.vector(3, float), eps: float=1e-2):
+        p_local = rotate_inv(self.q[None], p - self.x[None])
+
+        min_dist, closest = self._query_dist_bvh(p_local)
 
         collision, normal = False, ti.Vector([0.0, 0.0, 0.0])
         if min_dist < eps:
@@ -327,6 +506,15 @@ class RigidBody:
                 self.vertices[self.faces[closest][2]] - self.vertices[self.faces[closest][0]]
             ).normalized()
             normal = rotate(self.q[None], normal)
+        return collision, normal
+
+    @ti.func
+    def collision_sdf(self, p: ti.types.vector(3, float), eps: float = 3e-2):
+        sdf_val = self.interpolate_sdf(p)
+        collision = sdf_val < eps
+        normal = ti.Vector([0.0, 0.0, 0.0])
+        if collision:
+            normal = self.interpolate_sdf_gradient(p).normalized()
         return collision, normal
 
     @ti.func
