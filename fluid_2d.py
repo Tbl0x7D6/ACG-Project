@@ -13,6 +13,7 @@ substeps = int(1 / 60 // dt)
 
 dx = 1.0 / res
 rho = 1000.0
+kappa = 0.3
 
 u = ti.field(dtype=ti.f32, shape=(res + 1, res))
 v = ti.field(dtype=ti.f32, shape=(res, res + 1))
@@ -354,6 +355,10 @@ def reinit_levelset():
         phi_1.copy_from(phi_2)
     phi.copy_from(phi_1)
 
+@ti.func
+def curvature(i, j):
+    return phi[i + 1, j] + phi[i - 1, j] + phi[i, j + 1] + phi[i, j - 1] - 4 * phi[i, j]
+
 @ti.kernel
 def advect(dt: float):
     for i, j in ti.ndrange(res + 1, res):
@@ -414,6 +419,13 @@ def build_matrix(volume_correction: ti.types.f32):
                 b[i, j] -= v[i, j + 1]
 
             b[i, j] += volume_correction
+
+            # surface tension
+            if (phi[i + 1, j] > 0 and solid_phi[i + 1, j] > 0) or \
+               (phi[i - 1, j] > 0 and solid_phi[i - 1, j] > 0) or \
+               (phi[i, j + 1] > 0 and solid_phi[i, j + 1] > 0) or \
+               (phi[i, j - 1] > 0 and solid_phi[i, j - 1] > 0):
+                b[i, j] -= (kappa / dx) * curvature(i, j)
 
             if i < res - 1 and phi[i + 1, j] <= 0 and solid_phi[i + 1, j] > 0:
                 A_plus_i[i, j] = -1.0
@@ -509,7 +521,27 @@ def CG_solve(max_iters=15):
 
 @ti.kernel
 def apply_pressure_gradient():
-    # TODO: surface tension
+    # extrapolate pressure into neighboring air cells
+    # surface tension should not lead to surface expansion
+    for i, j in ti.ndrange(res, res):
+        if solid_phi[i, j] > 0 and phi[i, j] > 0:
+            p_sum = 0.0
+            count = 0
+            if i < res - 1 and (phi[i + 1, j] <= 0 or solid_phi[i + 1, j] > 0):
+                p_sum += p[i + 1, j]
+                count += 1
+            if i > 0 and (phi[i - 1, j] <= 0 or solid_phi[i - 1, j] > 0):
+                p_sum += p[i - 1, j]
+                count += 1
+            if j < res - 1 and (phi[i, j + 1] <= 0 or solid_phi[i, j + 1] > 0):
+                p_sum += p[i, j + 1]
+                count += 1
+            if j > 0 and (phi[i, j - 1] <= 0 or solid_phi[i, j - 1] > 0):
+                p_sum += p[i, j - 1]
+                count += 1
+            if count > 0:
+                p[i, j] = p_sum / count
+
     for i, j in ti.ndrange(res + 1, res):
         if i > 0 and i < res:
             if phi[i - 1, j] < 0 or phi[i, j] < 0:
