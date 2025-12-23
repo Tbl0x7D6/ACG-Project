@@ -521,27 +521,6 @@ def CG_solve(max_iters=15):
 
 @ti.kernel
 def apply_pressure_gradient():
-    # extrapolate pressure into neighboring air cells
-    # surface tension should not lead to surface expansion
-    for i, j in ti.ndrange(res, res):
-        if solid_phi[i, j] > 0 and phi[i, j] > 0:
-            p_sum = 0.0
-            count = 0
-            if i < res - 1 and (phi[i + 1, j] <= 0 or solid_phi[i + 1, j] > 0):
-                p_sum += p[i + 1, j]
-                count += 1
-            if i > 0 and (phi[i - 1, j] <= 0 or solid_phi[i - 1, j] > 0):
-                p_sum += p[i - 1, j]
-                count += 1
-            if j < res - 1 and (phi[i, j + 1] <= 0 or solid_phi[i, j + 1] > 0):
-                p_sum += p[i, j + 1]
-                count += 1
-            if j > 0 and (phi[i, j - 1] <= 0 or solid_phi[i, j - 1] > 0):
-                p_sum += p[i, j - 1]
-                count += 1
-            if count > 0:
-                p[i, j] = p_sum / count
-
     for i, j in ti.ndrange(res + 1, res):
         if i > 0 and i < res:
             if phi[i - 1, j] < 0 or phi[i, j] < 0:

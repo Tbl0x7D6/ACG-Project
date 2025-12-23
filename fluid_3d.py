@@ -7,7 +7,7 @@ USE_REFLECTION = False
 N1 = 256
 N2 = 256
 N3 = 256
-dt = 2e-5
+dt = 1e-4
 dtau = 0.001
 
 fps = 120
@@ -17,6 +17,7 @@ boundary_thickness = 6
 
 dx = 1.0 / 256
 rho = 1000.0
+kappa = 60
 
 vx = ti.field(dtype=ti.f32, shape=(N1 + 1, N2, N3))
 vy = ti.field(dtype=ti.f32, shape=(N1, N2 + 1, N3))
@@ -54,7 +55,8 @@ ki = (kp / (2 * zeta)) ** 2
 def calc_volume():
     count = 0.0
     for i, j, k in ti.ndrange(N1, N2, N3):
-        count += heaviside(phi[i, j, k])
+        if solid_phi[i, j, k] > 0:
+            count += heaviside(phi[i, j, k])
     current_volume[None] = count
 
 @ti.func
@@ -486,6 +488,13 @@ def reinit_levelset():
         phi_1.copy_from(phi_2)
     phi.copy_from(phi_1)
 
+@ti.func
+def curvature(i, j, k):
+    return (phi[i + 1, j, k] + phi[i - 1, j, k] +
+            phi[i, j + 1, k] + phi[i, j - 1, k] +
+            phi[i, j, k + 1] + phi[i, j, k - 1] -
+            6.0 * phi[i, j, k]) / (dx * dx)
+
 @ti.kernel
 def advect(dt: float):
     for i, j, k in ti.ndrange(N1 + 1, N2, N3):
@@ -524,81 +533,6 @@ def advect(dt: float):
         vy[i] = vy_new[i]
     for i in ti.grouped(vz):
         vz[i] = vz_new[i]
-
-# phi_normal = ti.field(dtype=ti.f32, shape=(res, res, res, 3))
-# curvature = ti.field(dtype=ti.f32, shape=(res, res, res))
-
-## Magic parameters
-# sigma = -1.0
-# magic_number = 0.0005
-
-## Surface tension
-# @ti.kernel
-# def phi_normal_field():
-#     for i, j, k in ti.ndrange(res, res, res):
-#         dx_phi = 0.0
-#         dy_phi = 0.0
-#         dz_phi = 0.0
-#         if i == 0:
-#             dx_phi = (phi[i + 1, j, k] - phi[i, j, k]) / dx
-#         elif i == res - 1:
-#             dx_phi = (phi[i, j, k] - phi[i - 1, j, k]) / dx
-#         else:
-#             dx_phi = (phi[i + 1, j, k] - phi[i - 1, j, k]) / (2.0 * dx)
-
-#         if j == 0:
-#             dy_phi = (phi[i, j + 1, k] - phi[i, j, k]) / dx
-#         elif j == res - 1:
-#             dy_phi = (phi[i, j, k] - phi[i, j - 1, k]) / dx
-#         else:
-#             dy_phi = (phi[i, j + 1, k] - phi[i, j - 1, k]) / (2.0 * dx)
-
-#         if k == 0:
-#             dz_phi = (phi[i, j, k + 1] - phi[i, j, k]) / dx
-#         elif k == res - 1:
-#             dz_phi = (phi[i, j, k] - phi[i, j, k - 1]) / dx
-#         else:
-#             dz_phi = (phi[i, j, k + 1] - phi[i, j, k - 1]) / (2.0 * dx)
-
-#         length = (dx_phi * dx_phi + dy_phi * dy_phi + dz_phi * dz_phi) ** 0.5 + 1e-8
-#         phi_normal[i, j, k, 0] = dx_phi / length
-#         phi_normal[i, j, k, 1] = dy_phi / length
-#         phi_normal[i, j, k, 2] = dz_phi / length
-
-# @ti.kernel
-# def calculate_kappa():
-#     for i, j, k in ti.ndrange(res, res, res):
-#         if abs(phi[i, j, k]) > 1.5 * dx:
-#             curvature[i, j, k] = 0.0
-#         else:
-#             curvature[i, j, k] = -(phi_normal[i + 1, j, k, 0] - phi_normal[i - 1, j, k, 0]) / (2.0 * dx) - (phi_normal[i, j + 1, k, 1] - phi_normal[i, j - 1, k, 1]) / (2.0 * dx) - (phi_normal[i, j, k + 1, 2] - phi_normal[i, j, k - 1, 2]) / (2.0 * dx)
-#             if curvature[i, j, k] > 1 / dx:
-#                 curvature[i, j, k] = 1 / dx
-#             elif curvature[i, j, k] < -1 / dx:
-#                 curvature[i, j, k] = -1 / dx
-
-# @ti.kernel
-# def apply_surface_tension():
-#     for i, j, k in ti.ndrange(res, res, res):
-#         if abs(phi[i, j, k]) <= 0.1 * dx and solid_phi[i, j, k] > 0:
-#             delta = 0.5 * (1.0 + ti.cos(3.14159 * phi[i, j, k] / (0.1 * dx)))
-#             force = sigma * curvature[i, j, k] * delta
-#             dir_x, dir_y, dir_z = phi_normal[i, j, k, 0], phi_normal[i, j, k, 1], phi_normal[i, j, k, 2]
-#             force_vec_x = force * dir_x
-#             force_vec_y = force * dir_y
-#             force_vec_z = force * dir_z
-#             if i < res - 1 and solid_phi[i + 1, j, k] > 0 and solid_phi[i, j, k] > 0:
-#                 u[i + 1, j, k] += force_vec_x * dt
-#             if i > 0 and solid_phi[i - 1, j, k] > 0 and solid_phi[i, j, k] > 0:
-#                 u[i, j, k] -= force_vec_x * dt
-#             if j < res - 1 and solid_phi[i, j + 1, k] > 0 and solid_phi[i, j, k] > 0:
-#                 v[i, j + 1, k] += force_vec_y * dt
-#             if j > 0 and solid_phi[i, j - 1, k] > 0 and solid_phi[i, j, k] > 0:
-#                 v[i, j, k] -= force_vec_y * dt
-#             if k < res - 1 and solid_phi[i, j, k + 1] > 0 and solid_phi[i, j, k] > 0:
-#                 w[i, j, k + 1] += force_vec_z * dt
-#             if k > 0 and solid_phi[i, j, k - 1] > 0 and solid_phi[i, j, k] > 0:
-#                 w[i, j, k] -= force_vec_z * dt
 
 @ti.kernel
 def constrain():
@@ -646,6 +580,14 @@ def build_matrix(volume_correction: ti.types.f32):
                 b[i, j, k] -= vz[i, j, k + 1]
 
             b[i, j, k] += volume_correction
+
+            if (phi[i + 1, j, k] > 0 and solid_phi[i + 1, j, k] > 0) or \
+               (phi[i - 1, j, k] > 0 and solid_phi[i - 1, j, k] > 0) or \
+               (phi[i, j + 1, k] > 0 and solid_phi[i, j + 1, k] > 0) or \
+               (phi[i, j - 1, k] > 0 and solid_phi[i, j - 1, k] > 0) or \
+               (phi[i, j, k + 1] > 0 and solid_phi[i, j, k + 1] > 0) or \
+               (phi[i, j, k - 1] > 0 and solid_phi[i, j, k - 1] > 0):
+                b[i, j, k] -= kappa * curvature(i, j, k) * dt / (rho * dx)
 
             if i < N1 - 1 and phi[i + 1, j, k] <= 0 and solid_phi[i + 1, j, k] > 0:
                 A_plus_i[i, j, k] = -1.0
@@ -723,9 +665,6 @@ def CG_solve(max_iters=15):
     c = -(kp * err[None] + ki * err_int[None]) / (1 + err[None])
 
     init_pressure_zero()
-    # phi_normal_field()
-    # calculate_kappa()
-    # apply_surface_tension()
     build_matrix(c)
     compute_residual()
     init_search_dirction()
@@ -750,19 +689,16 @@ def apply_pressure_gradient():
             if phi[i - 1, j, k] < 0 or phi[i, j, k] < 0:
                 if solid_phi[i - 1, j, k] >= 0 and solid_phi[i, j, k] >= 0:
                     vx[i, j, k] -= p[i, j, k] - p[i - 1, j, k]
-                    # vx[i, j, k] *= 1 - magic_number
     for i, j, k in ti.ndrange(N1, N2 + 1, N3):
         if j > 0 and j < N2:
             if phi[i, j - 1, k] < 0 or phi[i, j, k] < 0:
                 if solid_phi[i, j - 1, k] >= 0 and solid_phi[i, j, k] >= 0:
                     vy[i, j, k] -= p[i, j, k] - p[i, j - 1, k]
-                    # vy[i, j, k] *= 1 - magic_number
     for i, j, k in ti.ndrange(N1, N2, N3 + 1):
         if k > 0 and k < N3:
             if phi[i, j, k - 1] < 0 or phi[i, j, k] < 0:
                 if solid_phi[i, j, k - 1] >= 0 and solid_phi[i, j, k] >= 0:
                     vz[i, j, k] -= p[i, j, k] - p[i, j, k - 1]
-                    # vz[i, j, k] *= 1 - magic_number
 
 def project():
     CG_solve()
