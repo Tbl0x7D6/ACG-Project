@@ -1,10 +1,10 @@
 #!/bin/bash
 BASE_DIR="../../levelset"
-OUTPUT_DIR="../../plys"
+OUTPUT_DIR="../../plys3"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 TOTAL=600
-NUM_THREADS=30
+NUM_THREADS=15
 
 PER_THREAD=$((TOTAL / NUM_THREADS))
 

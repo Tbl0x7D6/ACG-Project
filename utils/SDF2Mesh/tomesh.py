@@ -8,8 +8,9 @@ from gaussian import restricted_gaussian
 from subdivision import loop_subdivision
 
 # File paths
-INPUT_PATH = "phi_00346.npy"
-OUTPUT_PATH = "output_remesh_7.ply"
+number = "00038"
+INPUT_PATH = "//LAPTOP-ASUS/Transfer/test/phi_" + number + ".npy"
+OUTPUT_PATH = "E:/ACG-Project/test/output_remesh_" + number + ".ply"
 
 # Mesh parameters
 RESOLUTION = 256
@@ -20,22 +21,24 @@ SIGMA = 1.0                 # Gaussian smoothing sigma
 LEVEL = 0.0                 # Level set value for surface extraction
 LAMBDA = 0.50               # Taubin smoothing lambda
 MU = -0.53                  # Taubin smoothing mu
-ATTATCH_THRESHOLD = 0.1     # Threshold for attaching boundary vertices
+ATTATCH_THRESHOLD = 0.40    # Thresholds for attaching boundary vertices, edges, faces
+THRESHOLD_LIST = [1.50, 2.80, 3.60]
+TAUBIN_THRESHOLD = 0.2      # Threshold for Taubin smoothing boundary vertices
 
-UPSAMPLE = 1                # Volume upsampling factor
+UPSAMPLE = 2                # Volume upsampling factor
 MAIN_ITERATIONS = 10        # Number of Taubin smoothing iterations
 SUB_ITERATIONS = 0          # Number of Loop subdivision iterations
 GAUSSIAN_ITERATIONS = 1     # Number of restricted Gaussian smoothing iterations
 
 
-def combine_water_and_solid(level_set: np.ndarray) -> np.ndarray:
-    solid_phi = np.zeros((RESOLUTION, RESOLUTION, RESOLUTION), dtype=np.float32)
-    for i in range(RESOLUTION):
-        for j in range(RESOLUTION):
-            for k in range(RESOLUTION):
-                if  i < THICKNESS or i >= RESOLUTION - THICKNESS or \
-                    j < THICKNESS or j >= RESOLUTION - THICKNESS or \
-                    k < THICKNESS or k >= RESOLUTION - THICKNESS:
+def combine_water_and_solid(level_set: np.ndarray, upsample_times: int) -> np.ndarray:
+    solid_phi = np.zeros((RESOLUTION * upsample_times, RESOLUTION * upsample_times, RESOLUTION * upsample_times), dtype=np.float32)
+    for i in range(RESOLUTION * upsample_times):
+        for j in range(RESOLUTION * upsample_times):
+            for k in range(RESOLUTION * upsample_times):
+                if  i < THICKNESS * upsample_times or i >= RESOLUTION * upsample_times - THICKNESS * upsample_times or \
+                    j < THICKNESS * upsample_times or j >= RESOLUTION * upsample_times - THICKNESS * upsample_times or \
+                    k < THICKNESS * upsample_times or k >= RESOLUTION * upsample_times - THICKNESS * upsample_times:
                     solid_phi[i][j][k] = -1.0
                 else:
                     solid_phi[i][j][k] = 1.0
@@ -98,6 +101,66 @@ def upsample_volume(volume: np.ndarray, factor: int) -> np.ndarray:
     return upsampled
 
 
+def _cubic_kernel(x: np.ndarray, a: float = -0.5) -> np.ndarray:
+    """Keys cubic convolution kernel (Catmull-Rom with a=-0.5)."""
+    absx = np.abs(x)
+    absx2 = absx * absx
+    absx3 = absx2 * absx
+
+    k1 = ((a + 2.0) * absx3) - ((a + 3.0) * absx2) + 1.0
+    k2 = (a * absx3) - (5.0 * a * absx2) + (8.0 * a * absx) - (4.0 * a)
+    return np.where(absx <= 1.0, k1, np.where(absx < 2.0, k2, 0.0))
+
+
+def _cubic_resize_axis(volume: np.ndarray, factor: int, axis: int) -> np.ndarray:
+    """Resize along one axis using cubic convolution interpolation."""
+    if factor <= 1:
+        return volume
+
+    vol = np.moveaxis(volume, axis, 0)
+    src_len = vol.shape[0]
+    dst_len = src_len * factor
+
+    # Coordinates in source space spaced evenly across the original range.
+    coords = np.linspace(0.0, src_len - 1, dst_len, dtype=np.float32)
+    base = np.floor(coords).astype(np.int64)
+    frac = coords - base
+
+    # Neighbor indices with clamping at boundaries.
+    idxs = np.stack((base - 1, base, base + 1, base + 2), axis=0)
+    idxs = np.clip(idxs, 0, src_len - 1)
+
+    # Cubic weights for each neighbor offset.
+    weights = np.stack(
+        (
+            _cubic_kernel(frac + 1.0),
+            _cubic_kernel(frac),
+            _cubic_kernel(frac - 1.0),
+            _cubic_kernel(frac - 2.0),
+        ),
+        axis=0,
+    ).astype(np.float32, copy=False)
+
+    # Broadcast weights over trailing dimensions.
+    weight_shape = (4, dst_len) + (1,) * (vol.ndim - 1)
+    weights = weights.reshape(weight_shape)
+
+    gathered = np.stack([vol[idxs[k]] for k in range(4)], axis=0)
+    resized = np.sum(weights * gathered, axis=0)
+    return np.moveaxis(resized, 0, axis)
+
+
+def upsample(volume: np.ndarray, factor: int) -> np.ndarray:
+    """Upsample a 3D volume by an integer factor using separable cubic interpolation."""
+    if factor <= 1:
+        return volume.astype(np.float32, copy=False)
+
+    result = volume.astype(np.float32, copy=False)
+    for axis in range(3):
+        result = _cubic_resize_axis(result, factor, axis)
+    return result
+
+
 def run_marching_cubes(volume: np.ndarray, level: float, spacing: Sequence[float], origin: Sequence[float]) -> Tuple[np.ndarray, np.ndarray]:
     verts, faces, _, _ = measure.marching_cubes(volume, level=level, spacing=spacing)
     verts = verts.astype(np.float32, copy=False)
@@ -110,14 +173,49 @@ def run_marching_cubes(volume: np.ndarray, level: float, spacing: Sequence[float
     return verts, faces
 
 
-def attach_boundary(vertices: np.ndarray, threshold: float) -> np.ndarray:
+def attach_boundary(vertices: np.ndarray, threshold: Sequence[float]) -> np.ndarray:
+    threshold_face = threshold[0]
+    threshold_edge = threshold[1]
+    threshold_vertex = threshold[2]
     verts = np.asarray(vertices, dtype=np.float32)
     for i in range(len(verts)):
         for d in range(3):
-            if abs(verts[i, d] - THICKNESS) < threshold:
-                verts[i, d] = float(THICKNESS)
-            if abs(verts[i, d] - (RESOLUTION - THICKNESS)) < threshold:
-                verts[i, d] = float(RESOLUTION - THICKNESS)
+            if abs(verts[i, d] - THICKNESS) < threshold_face:
+                verts[i, d] = float(THICKNESS + 0.01)
+                other_dims = [od for od in range(3) if od != d]
+                for od in other_dims:
+                    if abs(verts[i, od] - THICKNESS) < threshold_edge:
+                        verts[i, od] = float(THICKNESS + 0.01)
+                        left_dim = [ld for ld in other_dims if ld != od][0]
+                        if abs(verts[i, left_dim] - THICKNESS) < threshold_vertex:
+                            verts[i, left_dim] = float(THICKNESS + 0.01)
+                        if abs(verts[i, left_dim] - (RESOLUTION - THICKNESS - 0.5)) < threshold_vertex:
+                            verts[i, left_dim] = float(RESOLUTION - THICKNESS - 0.5 - 0.01)
+                    if abs(verts[i, od] - (RESOLUTION - THICKNESS - 0.5)) < threshold_edge:
+                        verts[i, od] = float(RESOLUTION - THICKNESS - 0.5 - 0.01)
+                        left_dim = [ld for ld in other_dims if ld != od][0]
+                        if abs(verts[i, left_dim] - THICKNESS) < threshold_vertex:
+                            verts[i, left_dim] = float(THICKNESS + 0.01)
+                        if abs(verts[i, left_dim] - (RESOLUTION - THICKNESS - 0.5)) < threshold_vertex:
+                            verts[i, left_dim] = float(RESOLUTION - THICKNESS - 0.5 - 0.01)
+            if abs(verts[i, d] - (RESOLUTION - THICKNESS - 0.5)) < threshold_face:
+                verts[i, d] = float(RESOLUTION - THICKNESS - 0.5 - 0.01)
+                other_dims = [od for od in range(3) if od != d]
+                for od in other_dims:
+                    if abs(verts[i, od] - THICKNESS) < threshold_edge:
+                        verts[i, od] = float(THICKNESS + 0.01)
+                        left_dim = [ld for ld in other_dims if ld != od][0]
+                        if abs(verts[i, left_dim] - THICKNESS) < threshold_vertex:
+                            verts[i, left_dim] = float(THICKNESS + 0.01)
+                        if abs(verts[i, left_dim] - (RESOLUTION - THICKNESS - 0.5)) < threshold_vertex:
+                            verts[i, left_dim] = float(RESOLUTION - THICKNESS - 0.5 - 0.01)
+                    if abs(verts[i, od] - (RESOLUTION - THICKNESS - 0.5)) < threshold_edge:
+                        verts[i, od] = float(RESOLUTION - THICKNESS - 0.5 - 0.01)
+                        left_dim = [ld for ld in other_dims if ld != od][0]
+                        if abs(verts[i, left_dim] - THICKNESS) < threshold_vertex:
+                            verts[i, left_dim] = float(THICKNESS + 0.01)
+                        if abs(verts[i, left_dim] - (RESOLUTION - THICKNESS - 0.5)) < threshold_vertex:
+                            verts[i, left_dim] = float(RESOLUTION - THICKNESS - 0.5 - 0.01)
     return verts.astype(vertices.dtype, copy=False)
 
 
@@ -143,16 +241,18 @@ def write_ply(path: Path, vertices: np.ndarray, faces: np.ndarray) -> None:
 
 def level_set_to_mesh(level_set: np.ndarray, output_path: Path) -> None:
     level_set = restricted_gaussian(level_set, SIGMA, RESOLUTION, THICKNESS, GAUSSIAN_ITERATIONS)
-    combined_volume = combine_water_and_solid(level_set)
+    refined = upsample(level_set, UPSAMPLE)
+    combined_volume = combine_water_and_solid(refined, UPSAMPLE)
     sub_volume, offset = extract_active_region(combined_volume)
-    refined = upsample_volume(sub_volume, UPSAMPLE)
+    # refined = upsample_volume(sub_volume, UPSAMPLE)
     spacing = tuple(1.0 / UPSAMPLE for _ in range(3))
-    origin = tuple(float(val) for val in offset)
-    vertices, faces = run_marching_cubes(refined, level=LEVEL, spacing=spacing, origin=origin)
+    origin = (float(offset[0]) / UPSAMPLE, float(offset[1]) / UPSAMPLE, float(offset[2]) / UPSAMPLE)
+    vertices, faces = run_marching_cubes(sub_volume, level=LEVEL, spacing=spacing, origin=origin)
     for _ in range(MAIN_ITERATIONS):
-        vertices, faces = taubin_smoothing(vertices, faces, RESOLUTION, THICKNESS, LAMBDA, MU)
+        vertices, faces = taubin_smoothing(vertices, faces, RESOLUTION, THICKNESS, LAMBDA, MU, TAUBIN_THRESHOLD)
     # Final check to deal with bubbles
-    vertices = attach_boundary(vertices, ATTATCH_THRESHOLD)
+    # vertices = attach_boundary(vertices, ATTATCH_THRESHOLD)
+    vertices = attach_boundary(vertices, ATTATCH_THRESHOLD * np.array(THRESHOLD_LIST) / UPSAMPLE)
     vertices, faces = loop_subdivision(vertices, faces, SUB_ITERATIONS, RESOLUTION, THICKNESS)
     write_ply(Path(output_path), vertices, faces)
 

@@ -47,15 +47,15 @@ def _restricted_taubin_smoothing(vertices: np.ndarray, faces: np.ndarray, bounda
 	return smoothed_vertices, faces.copy()
 
 
-def taubin_smoothing(vertices: np.ndarray, faces: np.ndarray, resolution: int, thickness: int, Lambda: float, mu: float) -> Tuple[np.ndarray, np.ndarray]:
+def taubin_smoothing(vertices: np.ndarray, faces: np.ndarray, resolution: int, thickness: int, Lambda: float, mu: float, taubin_threshold: float) -> Tuple[np.ndarray, np.ndarray]:
     coords = np.asarray(vertices, dtype=np.float32)
     boundary_vertices = (
-          (np.abs(coords[:, 0] - (thickness - 1)) < 0.01)
-        | (np.abs(coords[:, 0] - (resolution - thickness)) < 0.01)
-        | (np.abs(coords[:, 1] - (thickness - 1)) < 0.01)
-        | (np.abs(coords[:, 1] - (resolution - thickness)) < 0.01)
-        | (np.abs(coords[:, 2] - (thickness - 1)) < 0.01)
-        | (np.abs(coords[:, 2] - (resolution - thickness)) < 0.01)
+          (np.abs(coords[:, 0] - (thickness)) < taubin_threshold)
+        | (np.abs(coords[:, 0] - (resolution - thickness - 0.5)) < taubin_threshold)
+        | (np.abs(coords[:, 1] - (thickness)) < taubin_threshold)
+        | (np.abs(coords[:, 1] - (resolution - thickness - 0.5)) < taubin_threshold)
+        | (np.abs(coords[:, 2] - (thickness)) < taubin_threshold)
+        | (np.abs(coords[:, 2] - (resolution - thickness - 0.5)) < taubin_threshold)
     )
     smoothed_vertices, smoothed_faces = _restricted_taubin_smoothing(vertices, faces, boundary_vertices, Lambda, mu)
     return smoothed_vertices, smoothed_faces

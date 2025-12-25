@@ -1,4 +1,5 @@
 import taichi as ti
+from materials import RigidBody
 
 ti.init(arch=ti.cuda, device_memory_fraction=0.95)
 
@@ -17,7 +18,7 @@ boundary_thickness = 6
 
 dx = 1.0 / 256
 rho = 1000.0
-kappa = 60
+kappa = 30
 
 vx = ti.field(dtype=ti.f32, shape=(N1 + 1, N2, N3))
 vy = ti.field(dtype=ti.f32, shape=(N1, N2 + 1, N3))
@@ -111,6 +112,8 @@ def interpolate_phi(phi, x, y, z):
 
     return cubic_interp(col0, col1, col2, col3, fy)
 
+bunny = RigidBody("objects/bunny.obj", scale=0.3, x=ti.Vector([0.5, 0.3, 0.5]), mass=1.0, sdf_resolution=max(N1, N2, N3))
+
 @ti.kernel
 def init():
     for i in ti.grouped(vx):
@@ -137,15 +140,19 @@ def init():
             solid_phi[i, j, k] = 1.0
 
     for i, j, k in ti.ndrange(N1, N2, N3):
-        r = ((i - N1 / 3) ** 2 + (j - N2 / 3) ** 2 + (k - N3 / 2) ** 2) ** 0.5 * dx
-        phi[i, j, k] = r - 0.2
+        # Example 1
+        # r = ((i - N1 / 3) ** 2 + (j - N2 / 3) ** 2 + (k - N3 / 2) ** 2) ** 0.5 * dx
+        # phi[i, j, k] = r - 0.2
 
-        phi_bottom = max(j * dx - 0.1, (boundary_thickness - j) * dx, 
-                        (i - N1 + boundary_thickness) * dx, (boundary_thickness - i) * dx,
-                        (k - N3 + boundary_thickness) * dx, (boundary_thickness - k) * dx)
+        # phi_bottom = max(j * dx - 0.1, (boundary_thickness - j) * dx, 
+        #                 (i - N1 + boundary_thickness) * dx, (boundary_thickness - i) * dx,
+        #                 (k - N3 + boundary_thickness) * dx, (boundary_thickness - k) * dx)
 
-        phi[i, j, k] = min(phi[i, j, k], phi_bottom)
-        # phi[i, j, k] = max(i * dx - 0.5, j * dx - 0.9, -(i * dx - 0.2), -(j * dx - 0.2))
+        # phi[i, j, k] = min(phi[i, j, k], phi_bottom)
+
+        # Example 2
+        pos = ti.Vector([(i + 0.5) * dx, (j + 0.5) * dx, (k + 0.5) * dx])
+        phi[i, j, k] = min(bunny.interpolate_sdf(pos), 1.0)
 
 def init_volume():
     calc_volume()
@@ -406,13 +413,10 @@ def advect_levelset():
     for i, j, k in ti.ndrange(N1, N2, N3):
         pos = ti.Vector([(i + 0.5) * dx, (j + 0.5) * dx, (k + 0.5) * dx])
         back_pos = rk2_trace(pos.x, pos.y, pos.z, -dt)
-        phi_1[i, j, k] = interpolate_phi(phi, back_pos.x, back_pos.y, back_pos.z)
-    # for i, j, k in ti.ndrange(res, res, res):
-    #     pos = ti.Vector([(i + 0.5) * dx, (j + 0.5) * dx])
-    #     fwd_pos = rk2_trace(pos.x, pos.y, dt)
-    #     phi_2[i, j, k] = interpolate_phi(phi_1, fwd_pos.x, fwd_pos.y)
-    # for i, j, k in ti.ndrange(res, res, res):
-    #     phi[i, j, k] = phi_1[i, j, k] + 0.5 * (phi[i, j, k] - phi_2[i, j, k])
+        val_back = interpolate_phi(phi, back_pos.x, back_pos.y, back_pos.z)
+        fwd_pos = rk2_trace(back_pos.x, back_pos.y, back_pos.z, dt)
+        val_fwd = interpolate_phi(phi, fwd_pos.x, fwd_pos.y, fwd_pos.z)
+        phi_1[i, j, k] = val_back + 0.5 * (phi[i, j, k] - val_fwd)
     for i, j, k in ti.ndrange(N1, N2, N3):
         phi[i, j, k] = phi_1[i, j, k]
 
@@ -481,9 +485,9 @@ def reinit_levelset_iter():
 
             phi_2[i, j, k] = phi_1[i, j, k] - dtau * s * (grad_norm - 1.0)
 
-def reinit_levelset():
+def reinit_levelset(num_iters=30):
     phi_1.copy_from(phi)
-    for _ in range(30):
+    for _ in range(num_iters):
         reinit_levelset_iter()
         phi_1.copy_from(phi_2)
     phi.copy_from(phi_1)
@@ -503,9 +507,10 @@ def advect(dt: float):
         z = (k + 0.5) * dx
 
         back = rk2_trace(x, y, z, -dt)
-        # pos_aux = rk2_trace(back.x, back.y, dt)
-        # back = back + 0.5 * (ti.Vector([x, y]) - pos_aux)
-        vx_new[i, j, k] = sample_vx(back.x, back.y, back.z)
+        val_back = sample_vx(back.x, back.y, back.z)
+        fwd_pos = rk2_trace(back.x, back.y, back.z, dt)
+        val_fwd = sample_vx(fwd_pos.x, fwd_pos.y, fwd_pos.z)
+        vx_new[i, j, k] = val_back + 0.5 * (vx[i, j, k] - val_fwd)
 
     for i, j, k in ti.ndrange(N1, N2 + 1, N3):
         x = (i + 0.5) * dx
@@ -513,9 +518,10 @@ def advect(dt: float):
         z = (k + 0.5) * dx
 
         back = rk2_trace(x, y, z, -dt)
-        # pos_aux = rk2_trace(back.x, back.y, dt)
-        # back = back + 0.5 * (ti.Vector([x, y]) - pos_aux)
-        vy_new[i, j, k] = sample_vy(back.x, back.y, back.z)
+        val_back = sample_vy(back.x, back.y, back.z)
+        fwd_pos = rk2_trace(back.x, back.y, back.z, dt)
+        val_fwd = sample_vy(fwd_pos.x, fwd_pos.y, fwd_pos.z)
+        vy_new[i, j, k] = val_back + 0.5 * (vy[i, j, k] - val_fwd)
 
     for i, j, k in ti.ndrange(N1, N2, N3 + 1):
         x = (i + 0.5) * dx
@@ -523,9 +529,10 @@ def advect(dt: float):
         z = k * dx
 
         back = rk2_trace(x, y, z, -dt)
-        # pos_aux = rk2_trace(back.x, back.y, dt)
-        # back = back + 0.5 * (ti.Vector([x, y]) - pos_aux)
-        vz_new[i, j, k] = sample_vz(back.x, back.y, back.z)
+        val_back = sample_vz(back.x, back.y, back.z)
+        fwd_pos = rk2_trace(back.x, back.y, back.z, dt)
+        val_fwd = sample_vz(fwd_pos.x, fwd_pos.y, fwd_pos.z)
+        vz_new[i, j, k] = val_back + 0.5 * (vz[i, j, k] - val_fwd)
 
     for i in ti.grouped(vx):
         vx[i] = vx_new[i]
@@ -799,15 +806,15 @@ def export(count):
     np.save(f"levelset/phi_{count:05d}", phi.to_numpy())
 
 frame_count = 0
-while window.running and frame_count < fps * 5:
+while window.running and frame_count < fps * 3:
     for _ in range(substeps):
         substep()
         if counter % (fps // 2) == 0:
             print("[INFO] Substep completed: ", counter)
         current_t += dt
 
-    if frame_count % (fps * 5 // 6) == 0 and frame_count > 0:
-        add_drop()
+    # if frame_count % (fps * 5 // 6) == 0 and frame_count > 0:
+    #     add_drop()
 
     print("[INFO] Frame: ", frame_count)
     print("[DEBUG] Volume: ", current_volume[None])
