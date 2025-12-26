@@ -1,5 +1,5 @@
 import taichi as ti
-from materials import RigidBody
+from materials import RigidBody, rotate, rotate_inv
 
 ti.init(arch=ti.cuda, device_memory_fraction=0.95)
 
@@ -20,6 +20,8 @@ dx = 1.0 / 256
 rho = 1000.0
 kappa = 30
 
+g = 9.81
+
 vx = ti.field(dtype=ti.f32, shape=(N1 + 1, N2, N3))
 vy = ti.field(dtype=ti.f32, shape=(N1, N2 + 1, N3))
 vz = ti.field(dtype=ti.f32, shape=(N1, N2, N3 + 1))
@@ -37,6 +39,14 @@ A_plus_i = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
 A_plus_j = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
 A_plus_k = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
 b = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
+
+J_trans = ti.Vector.field(3, dtype=ti.f32, shape=(N1, N2, N3))
+J_rot = ti.Vector.field(3, dtype=ti.f32, shape=(N1, N2, N3))
+
+p_force = ti.Vector.field(3, dtype=ti.f32, shape=())
+p_torque = ti.Vector.field(3, dtype=ti.f32, shape=())
+
+rigid = RigidBody("objects/bunny.obj", scale=0.3, x=ti.Vector([0.5, 0.7, 0.5]), mass=10.0, sdf_resolution=max(N1, N2, N3))
 
 solid_phi = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
 phi = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
@@ -56,7 +66,8 @@ ki = (kp / (2 * zeta)) ** 2
 def calc_volume():
     count = 0.0
     for i, j, k in ti.ndrange(N1, N2, N3):
-        if solid_phi[i, j, k] > 0:
+        x, y, z = (i + 0.5) * dx, (j + 0.5) * dx, (k + 0.5) * dx
+        if solid_phi[i, j, k] > 0 and rigid.interpolate_sdf(ti.Vector([x, y, z])) > 0:
             count += heaviside(phi[i, j, k])
     current_volume[None] = count
 
@@ -112,8 +123,6 @@ def interpolate_phi(phi, x, y, z):
 
     return cubic_interp(col0, col1, col2, col3, fy)
 
-bunny = RigidBody("objects/bunny.obj", scale=0.3, x=ti.Vector([0.5, 0.3, 0.5]), mass=1.0, sdf_resolution=max(N1, N2, N3))
-
 @ti.kernel
 def init():
     for i in ti.grouped(vx):
@@ -151,8 +160,13 @@ def init():
         # phi[i, j, k] = min(phi[i, j, k], phi_bottom)
 
         # Example 2
-        pos = ti.Vector([(i + 0.5) * dx, (j + 0.5) * dx, (k + 0.5) * dx])
-        phi[i, j, k] = min(bunny.interpolate_sdf(pos), 1.0)
+        # pos = ti.Vector([(i + 0.5) * dx, (j + 0.5) * dx, (k + 0.5) * dx])
+        # phi[i, j, k] = min(bunny.interpolate_sdf(pos), 1.0)
+
+        # Example 3, FSI
+        phi[i, j, k] = max(j * dx - 0.4, (boundary_thickness - j) * dx, 
+                        (i - N1 + boundary_thickness) * dx, (boundary_thickness - i) * dx,
+                        (k - N3 + boundary_thickness) * dx, (boundary_thickness - k) * dx)
 
 def init_volume():
     calc_volume()
@@ -162,7 +176,6 @@ def init_volume():
 
 @ti.kernel
 def apply_gravity():
-    g = 9.81
     for i, j, k in ti.ndrange(N1, N2 + 1, N3):
         if phi[i, j - 1, k] < 0 or phi[i, j, k] < 0 and solid_phi[i, j - 1, k] > 0 and solid_phi[i, j, k] > 0:
             vy[i, j, k] -= g * dt
@@ -543,7 +556,7 @@ def advect(dt: float):
 
 @ti.kernel
 def constrain():
-    for i, j, k in ti.ndrange(N1 + 1, N2, N3):
+    for i, j, k in ti.ndrange(N1, N2, N3):
         if i < N1 - 1 and solid_phi[i + 1, j, k] < 0 and vx[i + 1, j, k] > 0:
             vx[i + 1, j, k] = 0.0
         elif i > 0 and solid_phi[i - 1, j, k] < 0 and vx[i, j, k] < 0:
@@ -557,6 +570,26 @@ def constrain():
         elif k > 0 and solid_phi[i, j, k - 1] < 0 and vz[i, j, k] < 0:
             vz[i, j, k] = 0.0
 
+        vel_left = rigid.velocity_at_point(ti.Vector([i, j + 0.5, k + 0.5]) * dx).x
+        vel_right = rigid.velocity_at_point(ti.Vector([i + 1, j + 0.5, k + 0.5]) * dx).x
+        vel_down = rigid.velocity_at_point(ti.Vector([i + 0.5, j, k + 0.5]) * dx).y
+        vel_up = rigid.velocity_at_point(ti.Vector([i + 0.5, j + 1, k + 0.5]) * dx).y
+        vel_back = rigid.velocity_at_point(ti.Vector([i + 0.5, j + 0.5, k]) * dx).z
+        vel_front = rigid.velocity_at_point(ti.Vector([i + 0.5, j + 0.5, k + 1]) * dx).z
+
+        if rigid.interpolate_sdf(ti.Vector([i - 0.5, j + 0.5, k + 0.5]) * dx) < 0 and vx[i, j, k] < vel_left:
+            vx[i, j, k] = vel_left
+        elif rigid.interpolate_sdf(ti.Vector([i + 1.5, j + 0.5, k + 0.5]) * dx) < 0 and vx[i + 1, j, k] > vel_right:
+            vx[i + 1, j, k] = vel_right
+        if rigid.interpolate_sdf(ti.Vector([i + 0.5, j - 0.5, k + 0.5]) * dx) < 0 and vy[i, j, k] < vel_down:
+            vy[i, j, k] = vel_down
+        elif rigid.interpolate_sdf(ti.Vector([i + 0.5, j + 1.5, k + 0.5]) * dx) < 0 and vy[i, j + 1, k] > vel_up:
+            vy[i, j + 1, k] = vel_up
+        if rigid.interpolate_sdf(ti.Vector([i + 0.5, j + 0.5, k - 0.5]) * dx) < 0 and vz[i, j, k] < vel_back:
+            vz[i, j, k] = vel_back
+        elif rigid.interpolate_sdf(ti.Vector([i + 0.5, j + 0.5, k + 1.5]) * dx) < 0 and vz[i, j, k + 1] > vel_front:
+            vz[i, j, k + 1] = vel_front
+
 @ti.kernel
 def build_matrix(volume_correction: ti.types.f32):
     for i, j, k in ti.ndrange(N1, N2, N3):
@@ -566,6 +599,8 @@ def build_matrix(volume_correction: ti.types.f32):
         A_plus_i[i, j, k] = 0.0
         A_plus_j[i, j, k] = 0.0
         A_plus_k[i, j, k] = 0.0
+        J_trans[i, j, k] = ti.Vector([0.0, 0.0, 0.0])
+        J_rot[i, j, k] = ti.Vector([0.0, 0.0, 0.0])
         if phi[i, j, k] <= 0 and solid_phi[i, j, k] > 0:
             if i > 0 and solid_phi[i - 1, j, k] > 0:
                 A_diag[i, j, k] += 1.0
@@ -603,37 +638,87 @@ def build_matrix(volume_correction: ti.types.f32):
             if k < N3 - 1 and phi[i, j, k + 1] <= 0 and solid_phi[i, j, k + 1] > 0:
                 A_plus_k[i, j, k] = -1.0
 
+            r = ti.Vector([i + 0.5, j + 0.5, k + 0.5]) * dx - rigid.x[None]
+
+            if rigid.interpolate_sdf(ti.Vector([i - 0.5, j + 0.5, k + 0.5]) * dx) <= 0:
+                J_trans[i, j, k].x -= dx * dx
+                J_rot[i, j, k].z += dx * dx * r.y
+                J_rot[i, j, k].y -= dx * dx * r.z
+                b[i, j, k] += rigid.velocity_at_point(ti.Vector([i, j + 0.5, k + 0.5]) * dx).x
+            if rigid.interpolate_sdf(ti.Vector([i + 1.5, j - 0.5, k + 0.5]) * dx) <= 0:
+                J_trans[i, j, k].x += dx * dx
+                J_rot[i, j, k].z -= dx * dx * r.y
+                J_rot[i, j, k].y += dx * dx * r.z
+                b[i, j, k] -= rigid.velocity_at_point(ti.Vector([i + 1, j + 0.5, k + 0.5]) * dx).x
+            if rigid.interpolate_sdf(ti.Vector([i + 0.5, j - 0.5, k + 0.5]) * dx) <= 0:
+                J_trans[i, j, k].y -= dx * dx
+                J_rot[i, j, k].x += dx * dx * r.z
+                J_rot[i, j, k].z -= dx * dx * r.x
+                b[i, j, k] += rigid.velocity_at_point(ti.Vector([i + 0.5, j, k + 0.5]) * dx).y
+            if rigid.interpolate_sdf(ti.Vector([i + 0.5, j + 1.5, k + 0.5]) * dx) <= 0:
+                J_trans[i, j, k].y += dx * dx
+                J_rot[i, j, k].x -= dx * dx * r.z
+                J_rot[i, j, k].z += dx * dx * r.x
+                b[i, j, k] -= rigid.velocity_at_point(ti.Vector([i + 0.5, j + 1, k + 0.5]) * dx).y
+            if rigid.interpolate_sdf(ti.Vector([i + 0.5, j + 0.5, k - 0.5]) * dx) <= 0:
+                J_trans[i, j, k].z -= dx * dx
+                J_rot[i, j, k].y += dx * dx * r.x
+                J_rot[i, j, k].x -= dx * dx * r.y
+                b[i, j, k] += rigid.velocity_at_point(ti.Vector([i + 0.5, j + 0.5, k]) * dx).z
+            if rigid.interpolate_sdf(ti.Vector([i + 0.5, j + 0.5, k + 1.5]) * dx) <= 0:
+                J_trans[i, j, k].z += dx * dx
+                J_rot[i, j, k].y -= dx * dx * r.x
+                J_rot[i, j, k].x += dx * dx * r.y
+                b[i, j, k] -= rigid.velocity_at_point(ti.Vector([i + 0.5, j + 0.5, k + 1]) * dx).z
+
 @ti.kernel
 def init_pressure_zero():
     for i, j, k in ti.ndrange(N1, N2, N3):
         p[i, j, k] = 0.0
 
 @ti.func
-def Ap_val(i, j, k, p):
-    val = A_diag[i, j, k] * p[i, j, k]
-    if i < N1 - 1:
-        val += A_plus_i[i, j, k] * p[i + 1, j, k]
-    if i > 0:
-        val += A_plus_i[i - 1, j, k] * p[i - 1, j, k]
-    if j < N2 - 1:
-        val += A_plus_j[i, j, k] * p[i, j + 1, k]
-    if j > 0:
-        val += A_plus_j[i, j - 1, k] * p[i, j - 1, k]
-    if k < N3 - 1:
-        val += A_plus_k[i, j, k] * p[i, j, k + 1]
-    if k > 0:
-        val += A_plus_k[i, j, k - 1] * p[i, j, k - 1]
-    return val
+def pressure_force_on_rigid(p):
+    p_force[None] = ti.Vector([0.0, 0.0, 0.0])
+    p_torque[None] = ti.Vector([0.0, 0.0, 0.0])
+    for i, j, k in ti.ndrange(N1, N2, N3):
+        p_force[None] += J_trans[i, j, k] * p[i, j, k]
+        p_torque[None] += J_rot[i, j, k] * p[i, j, k]
+
+@ti.func
+def apply_A(p):
+    for i, j, k in ti.ndrange(N1, N2, N3):
+        val = A_diag[i, j, k] * p[i, j, k]
+        if i < N1 - 1:
+            val += A_plus_i[i, j, k] * p[i + 1, j, k]
+        if i > 0:
+            val += A_plus_i[i - 1, j, k] * p[i - 1, j, k]
+        if j < N2 - 1:
+            val += A_plus_j[i, j, k] * p[i, j + 1, k]
+        if j > 0:
+            val += A_plus_j[i, j - 1, k] * p[i, j - 1, k]
+        if k < N3 - 1:
+            val += A_plus_k[i, j, k] * p[i, j, k + 1]
+        if k > 0:
+            val += A_plus_k[i, j, k - 1] * p[i, j, k - 1]
+        Ap[i, j, k] = val
+
+    pressure_force_on_rigid(p)
+    alpha_cm = rigid.inertia_inv @ rotate(rigid.q[None], p_torque[None])
+    alpha_world = rotate_inv(rigid.q[None], alpha_cm)
+    a = rigid.m_inv * p_force[None]
+    for i, j, k in ti.ndrange(N1, N2, N3):
+        Ap[i, j, k] += rho * (a @ J_trans[i, j, k])
+        Ap[i, j, k] += rho * (alpha_world @ J_rot[i, j, k])
 
 @ti.kernel
 def compute_residual():
+    apply_A(p)
     for i, j, k in ti.ndrange(N1, N2, N3):
-        r[i, j, k] = b[i, j, k] - Ap_val(i, j, k, p)
+        r[i, j, k] = b[i, j, k] - Ap[i, j, k]
 
 @ti.kernel
 def compute_Ap():
-    for i, j, k in ti.ndrange(N1, N2, N3):
-        Ap[i, j, k] = Ap_val(i, j, k, p_cg)
+    apply_A(p_cg)
 
 @ti.kernel
 def init_search_dirction():
@@ -650,20 +735,17 @@ def dot_product_kernel(x: ti.template(), y: ti.template()) -> ti.f32:
 @ti.kernel
 def update_pressure(alpha: ti.f32):
     for i, j, k in ti.ndrange(N1, N2, N3):
-        if phi[i, j, k] <= 0 and solid_phi[i, j, k] > 0:
-            p[i, j, k] += alpha * p_cg[i, j, k]
+        p[i, j, k] += alpha * p_cg[i, j, k]
 
 @ti.kernel
 def update_residual(alpha: ti.f32):
     for i, j, k in ti.ndrange(N1, N2, N3):
-        if phi[i, j, k] <= 0 and solid_phi[i, j, k] > 0:
-            r[i, j, k] -= alpha * Ap[i, j, k]
+        r[i, j, k] -= alpha * Ap[i, j, k]
 
 @ti.kernel
 def update_search_direction(beta: ti.f32):
     for i, j, k in ti.ndrange(N1, N2, N3):
-        if phi[i, j, k] <= 0 and solid_phi[i, j, k] > 0:
-            p_cg[i, j, k] = r[i, j, k] + beta * p_cg[i, j, k]
+        p_cg[i, j, k] = r[i, j, k] + beta * p_cg[i, j, k]
 
 def CG_solve(max_iters=15):
     calc_volume()
@@ -738,6 +820,17 @@ def project():
     CG_solve()
     apply_pressure_gradient()
 
+@ti.kernel
+def substep_rigid():
+    pressure_force_on_rigid(p)
+    p_force[None] *= dx * rho / dt
+    p_torque[None] *= dx * rho / dt
+
+    rigid.force[None] = ti.Vector([0.0, -g, 0.0]) * rigid.m + p_force[None]
+    rigid.torque[None] = p_torque[None]
+
+    rigid.substep(dt)
+
 vx_half = ti.field(dtype=ti.f32, shape=vx.shape)
 vy_half = ti.field(dtype=ti.f32, shape=vy.shape)
 vz_half = ti.field(dtype=ti.f32, shape=vz.shape)
@@ -771,6 +864,9 @@ def substep():
         advect(dt)
         project()
     constrain()
+
+    substep_rigid()   
+
     counter += 1
 
 @ti.kernel
@@ -833,7 +929,7 @@ def export(count):
     np.save(f"levelset/phi_{count:05d}", phi.to_numpy())
 
 frame_count = 0
-while window.running and frame_count < fps * 3:
+while window.running and frame_count < fps * 5:
     for _ in range(substeps):
         substep()
         if counter % (fps // 2) == 0:
@@ -854,6 +950,7 @@ while window.running and frame_count < fps * 3:
     scene.point_light(pos=(3.0, 3.0, 3.0), color=(1.0, 1.0, 1.0))
 
     scene.particles(particles, radius=0.005, color=(0.2, 0.2, 0.5))
+    rigid.render(scene)
     
     canvas.scene(scene)
     window.show()
