@@ -7,12 +7,13 @@ USE_REFLECTION = False
 
 # MAC grid
 res = 512
-dt = 1e-4
+dt = 5e-4
 dtau = 0.001
 substeps = int(1 / 60 // dt)
 
 dx = 1.0 / res
 rho = 1000.0
+kappa = 0.0
 
 u = ti.field(dtype=ti.f32, shape=(res + 1, res))
 v = ti.field(dtype=ti.f32, shape=(res, res + 1))
@@ -29,11 +30,13 @@ A_plus_i = ti.field(dtype=ti.f32, shape=(res, res))
 A_plus_j = ti.field(dtype=ti.f32, shape=(res, res))
 b = ti.field(dtype=ti.f32, shape=(res, res))
 
-# solid ball
+Jx = ti.field(dtype=ti.f32, shape=(res, res))
+Jy = ti.field(dtype=ti.f32, shape=(res, res))
+
 ball_center = ti.Vector.field(2, dtype=ti.f32, shape=())
 ball_radius = 0.1
 ball_v = ti.Vector.field(2, dtype=ti.f32, shape=())
-ball_m = 0.7
+ball_m = 1.0
 
 @ti.func
 def ball_phi(i, j):
@@ -45,6 +48,34 @@ solid_phi = ti.field(dtype=ti.f32, shape=(res, res))
 phi = ti.field(dtype=ti.f32, shape=(res, res))
 phi_1 = ti.field(dtype=ti.f32, shape=(res, res))
 phi_2 = ti.field(dtype=ti.f32, shape=(res, res))
+
+# volume control (PI controller)
+correct_volume = ti.field(dtype=ti.f32, shape=())
+current_volume = ti.field(dtype=ti.f32, shape=())
+err = ti.field(dtype=ti.f32, shape=())
+err_int = ti.field(dtype=ti.f32, shape=())
+zeta = 2.0
+kp = 2.3 / (1 / 10)
+ki = (kp / (2 * zeta)) ** 2
+
+@ti.kernel
+def calc_volume():
+    count = 0.0
+    for i, j in ti.ndrange(res, res):
+        count += heaviside(phi[i, j])
+    current_volume[None] = count
+
+@ti.func
+def heaviside(phi_val):
+    epsilon = 1.5 * dx
+    h = 0.0
+    if phi_val < -epsilon:
+        h = 1.0
+    elif phi_val > epsilon:
+        h = 0.0
+    else:
+        h = 0.5 - 0.75 * (phi_val / epsilon) + 0.25 * (phi_val / epsilon) ** 3
+    return h
 
 @ti.func
 def cubic_interp(v0, v1, v2, v3, f):
@@ -113,15 +144,21 @@ def init():
 
     for i, j in ti.ndrange(res, res):
         # Example 1
-        phi[i, j] = max(i * dx - 0.6, j * dx - 0.8, -(i * dx - 0.2), -(j * dx - 0.1))
+        # phi[i, j] = max(i * dx - 0.6, j * dx - 0.8, -(i * dx - 0.2), -(j * dx - 0.1))
         # Example 2
-        # phi[i, j] = max(j * dx - 0.5 + 0.15 * ti.sin(0.01 * (i - 256)), -(i * dx - 1.0/16), -(j * dx - 1.0/16), i * dx - 15.0/16)
+        phi[i, j] = max(j * dx - 0.5, -(i * dx - 1.0/16), -(j * dx - 1.0/16), i * dx - 15.0/16)
 
     # Example 1
-    ball_center[None] = ti.Vector([0.75, 0.4])
+    # ball_center[None] = ti.Vector([0.75, 0.4])
     # Example 2
-    # ball_center[None] = ti.Vector([0.75, 0.8])
+    ball_center[None] = ti.Vector([0.65, 0.8])
     ball_v[None] = ti.Vector([0.0, 0.0])
+
+def init_volume():
+    calc_volume()
+    correct_volume[None] = current_volume[None]
+    err[None] = 0.0
+    err_int[None] = 0.0
 
 @ti.kernel
 def apply_gravity():
@@ -346,6 +383,10 @@ def reinit_levelset():
         phi_1.copy_from(phi_2)
     phi.copy_from(phi_1)
 
+@ti.func
+def curvature(i, j):
+    return phi[i + 1, j] + phi[i - 1, j] + phi[i, j + 1] + phi[i, j - 1] - 4 * phi[i, j]
+
 @ti.kernel
 def advect(dt: float):
     for i, j in ti.ndrange(res + 1, res):
@@ -392,13 +433,15 @@ def constrain():
             v[i, j] = ball_v[None].y
 
 @ti.kernel
-def build_matrix():
+def build_matrix(volume_correction: ti.types.f32):
     for i, j in ti.ndrange(res, res):
         b[i, j] = 0.0
     for i, j in ti.ndrange(res, res):
         A_diag[i, j] = 0.0
         A_plus_i[i, j] = 0.0
         A_plus_j[i, j] = 0.0
+        Jx[i, j] = 0.0
+        Jy[i, j] = 0.0
         # totally a piece of SHIT
         if phi[i, j] <= 0 and solid_phi[i, j] > 0 and ball_phi(i, j) > 0:
             if i > 0 and solid_phi[i - 1, j] > 0 and ball_phi(i - 1, j) > 0:
@@ -414,18 +457,24 @@ def build_matrix():
                 A_diag[i, j] += 1.0
                 b[i, j] -= v[i, j + 1]
 
+            b[i, j] += volume_correction
+
             if i < res - 1 and phi[i + 1, j] <= 0 and solid_phi[i + 1, j] > 0 and ball_phi(i + 1, j) > 0:
                 A_plus_i[i, j] = -1.0
             if j < res - 1 and phi[i, j + 1] <= 0 and solid_phi[i, j + 1] > 0 and ball_phi(i, j + 1) > 0:
                 A_plus_j[i, j] = -1.0
 
-            if ball_phi(i - 1, j) < 0:
+            if ball_phi(i - 1, j) <= 0:
+                Jx[i, j] -= dx
                 b[i, j] += ball_v[None].x
-            if ball_phi(i + 1, j) < 0:
+            if ball_phi(i + 1, j) <= 0:
+                Jx[i, j] += dx
                 b[i, j] -= ball_v[None].x
-            if ball_phi(i, j - 1) < 0:
+            if ball_phi(i, j - 1) <= 0:
+                Jy[i, j] -= dx
                 b[i, j] += ball_v[None].y
-            if ball_phi(i, j + 1) < 0:
+            if ball_phi(i, j + 1) <= 0:
+                Jy[i, j] += dx
                 b[i, j] -= ball_v[None].y
 
 @ti.kernel
@@ -433,28 +482,44 @@ def init_pressure_zero():
     for i, j in ti.ndrange(res, res):
         p[i, j] = 0.0
 
+fx = ti.field(dtype=ti.f32, shape=())
+fy = ti.field(dtype=ti.f32, shape=())
+
 @ti.func
-def Ap_val(i, j, p):
-    val = A_diag[i, j] * p[i, j]
-    if i < res - 1:
-        val += A_plus_i[i, j] * p[i + 1, j]
-    if i > 0:
-        val += A_plus_i[i - 1, j] * p[i - 1, j]
-    if j < res - 1:
-        val += A_plus_j[i, j] * p[i, j + 1]
-    if j > 0:
-        val += A_plus_j[i, j - 1] * p[i, j - 1]
-    return val
+def compute_buoyancy(p):
+    fx[None] = 0.0
+    fy[None] = 0.0
+    for i, j in ti.ndrange(res, res):
+        fx[None] += Jx[i, j] * p[i, j]
+        fy[None] += Jy[i, j] * p[i, j]
+
+@ti.func
+def apply_A(p):
+    for i, j in ti.ndrange(res, res):
+        val = A_diag[i, j] * p[i, j]
+        if i < res - 1:
+            val += A_plus_i[i, j] * p[i + 1, j]
+        if i > 0:
+            val += A_plus_i[i - 1, j] * p[i - 1, j]
+        if j < res - 1:
+            val += A_plus_j[i, j] * p[i, j + 1]
+        if j > 0:
+            val += A_plus_j[i, j - 1] * p[i, j - 1]
+        Ap[i, j] = val
+
+    compute_buoyancy(p)
+    for i, j in ti.ndrange(res, res):
+        Ap[i, j] += rho * (Jx[i, j] * fx[None] + Jy[i, j] * fy[None]) / ball_m
 
 @ti.kernel
 def compute_residual():
+    apply_A(p)
     for i, j in ti.ndrange(res, res):
-        r[i, j] = b[i, j] - Ap_val(i, j, p)
+        r[i, j] = b[i, j] - Ap[i, j]
 
 @ti.kernel
 def compute_Ap():
-    for i, j in ti.ndrange(res, res):
-        Ap[i, j] = Ap_val(i, j, p_cg)
+    apply_A(p_cg)
 
 @ti.kernel
 def init_search_dirction():
@@ -487,8 +552,13 @@ def update_search_direction(beta: ti.f32):
             p_cg[i, j] = r[i, j] + beta * p_cg[i, j]
 
 def CG_solve(max_iters=15):
+    calc_volume()
+    err[None] = current_volume[None] / correct_volume[None] - 1.0
+    err_int[None] += err[None] * dt
+    c = -(kp * err[None] + ki * err_int[None]) / (1 + err[None])
+
     init_pressure_zero()
-    build_matrix()
+    build_matrix(c)
     compute_residual()
     init_search_dirction()
     rtr_old = dot_product_kernel(r, r)
@@ -507,7 +577,6 @@ def CG_solve(max_iters=15):
 
 @ti.kernel
 def apply_pressure_gradient():
-    # TODO: surface tension
     for i, j in ti.ndrange(res + 1, res):
         if i > 0 and i < res:
             if phi[i - 1, j] < 0 or phi[i, j] < 0:
@@ -533,21 +602,12 @@ def project():
 
 @ti.kernel
 def substep_ball():
-    force = ti.Vector([0.0, 0.0])
-    for i, j in ti.ndrange(res, res):
-        if ball_phi(i, j) < 0:
-            if i > 0 and ball_phi(i - 1, j) >= 0 and phi[i - 1, j] < 0 and solid_phi[i - 1, j] >= 0:
-                force.x += p[i - 1, j]
-            if i < res - 1 and ball_phi(i + 1, j) >= 0 and phi[i + 1, j] < 0 and solid_phi[i + 1, j] >= 0:
-                force.x -= p[i + 1, j]
-            if j > 0 and ball_phi(i, j - 1) >= 0 and phi[i, j - 1] < 0 and solid_phi[i, j - 1] >= 0:
-                force.y += p[i, j - 1]
-            if j < res - 1 and ball_phi(i, j + 1) >= 0 and phi[i, j + 1] < 0 and solid_phi[i, j + 1] >= 0:
-                force.y -= p[i, j + 1]
+    compute_buoyancy(p)
 
-    force *= dx * rho
+    fx[None] *= dx * rho / dt
+    fy[None] *= dx * rho / dt
 
-    ball_v[None] += force / ball_m * dt + ti.Vector([0.0, -9.8]) * dt
+    ball_v[None] += ti.Vector([fx[None], fy[None]]) / ball_m * dt + ti.Vector([0.0, -9.8]) * dt
     ball_center[None] += ball_v[None] * dt
 
     min_dist_boundary = ball_radius + dx * (res / 16 + 2)
@@ -599,6 +659,7 @@ def substep():
     counter += 1
 
 init()
+init_volume()
 
 window = ti.ui.Window("2D Fluid Simulation", (512, 512))
 canvas = window.get_canvas()
