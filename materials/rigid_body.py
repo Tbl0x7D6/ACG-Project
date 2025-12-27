@@ -79,7 +79,8 @@ def dist_triangle(p, a, b, c):
 class RigidBody:
 
     def __init__(self, mesh_file: str, scale: float, mass: float, x=ti.Vector([0.0, 0.0, 0.0]), v=ti.Vector([0.0, 0.0, 0.0]),
-                 omega=ti.Vector([0.0, 0.0, 0.0]), q=ti.Vector([1.0, 0.0, 0.0, 0.0]), fixed: bool=False, use_sdf: bool=True, sdf_resolution: int=128):
+                 omega=ti.Vector([0.0, 0.0, 0.0]), q=ti.Vector([1.0, 0.0, 0.0, 0.0]), fixed: bool=False, use_sdf: bool=True,
+                 sdf_resolution: int=128, sdf_reinit_iters: int=50):
 
         _vertices, _faces = load_mesh.loader(mesh_file, scale)
 
@@ -96,6 +97,14 @@ class RigidBody:
         self.inertia_inv = self.inertia.inverse()
         self.fixed = fixed
 
+        if fixed:
+            self.m_inv = 0.0
+            self.inertia_inv = ti.Matrix([
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0]
+            ])
+
         self._build_bvh()
 
         self.use_sdf = use_sdf
@@ -104,7 +113,7 @@ class RigidBody:
             self.sdf = ti.field(dtype=float, shape=(sdf_resolution, sdf_resolution, sdf_resolution))
             self.sdf_1 = ti.field(dtype=float, shape=(sdf_resolution, sdf_resolution, sdf_resolution))
             self.sdf_2 = ti.field(dtype=float, shape=(sdf_resolution, sdf_resolution, sdf_resolution))
-            self._build_sdf()
+            self._build_sdf(sdf_reinit_iters)
 
         self.collision = self.collision_sdf if use_sdf else self.collision_bvh
 
@@ -321,7 +330,7 @@ class RigidBody:
             if count % 2 == 1:
                 self.sdf[i, j, k] = -self.sdf[i, j, k]
 
-    def _build_sdf(self):
+    def _build_sdf(self, n_iters: int = 50):
         # aabb of the mesh
         vertices_np = self.vertices.to_numpy()
         bmin = np.min(vertices_np, axis=0)
@@ -333,7 +342,7 @@ class RigidBody:
         self.extent = self.bmax - self.bmin
         self._init_sdf()
         self._mark_sdf_sign()
-        self._reinit_sdf()
+        self._reinit_sdf(n_iters)
 
     @ti.func
     def interpolate_sdf(self, p: ti.types.vector(3, float)) -> float:
