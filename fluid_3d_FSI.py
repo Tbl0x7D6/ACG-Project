@@ -1,9 +1,18 @@
 import taichi as ti
 from materials import RigidBody, rotate, rotate_inv
+import numpy as np
+import json
+import os
 
 ti.init(arch=ti.cuda, device_memory_fraction=0.95)
 
 USE_REFLECTION = False
+
+# Rigid body initial configuration
+RIGID_OBJ_PATH = "objects/bunny.obj"
+RIGID_SCALE = 0.3
+RIGID_INIT_POS = [0.5, 1.0, 0.5]
+RIGID_MASS = 15.0
 
 N1 = 256
 N2 = 256
@@ -18,9 +27,16 @@ boundary_thickness = 6
 
 dx = 1.0 / 256
 rho = 1000.0
-kappa = 30
+kappa = 10
 
 g = 9.81
+restitution = 0.5
+
+# Create directories for output
+os.makedirs("levelset", exist_ok=True)
+os.makedirs("rigid_states", exist_ok=True)
+os.makedirs("output", exist_ok=True)
+os.makedirs("plys", exist_ok=True)
 
 vx = ti.field(dtype=ti.f32, shape=(N1 + 1, N2, N3))
 vy = ti.field(dtype=ti.f32, shape=(N1, N2 + 1, N3))
@@ -46,7 +62,7 @@ J_rot = ti.Vector.field(3, dtype=ti.f32, shape=(N1, N2, N3))
 p_force = ti.Vector.field(3, dtype=ti.f32, shape=())
 p_torque = ti.Vector.field(3, dtype=ti.f32, shape=())
 
-rigid = RigidBody("objects/bunny.obj", scale=0.3, x=ti.Vector([0.5, 0.7, 0.5]), mass=10.0, sdf_resolution=max(N1, N2, N3))
+rigid = RigidBody(RIGID_OBJ_PATH, scale=RIGID_SCALE, x=ti.Vector(RIGID_INIT_POS), mass=RIGID_MASS, sdf_resolution=max(N1, N2, N3))
 
 solid_phi = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
 phi = ti.field(dtype=ti.f32, shape=(N1, N2, N3))
@@ -109,7 +125,8 @@ def y_interpolate_phi(phi, x, j, z):
     return cubic_interp(col0, col1, col2, col3, fz)
 
 @ti.func
-def interpolate_phi(phi, x, y, z):
+def interpolate_phi(phi, p):
+    x, y, z = p.x, p.y, p.z
     j = ti.cast(y / dx - 0.5, ti.i32)
     j = ti.max(1, ti.min(N2 - 2, j))
 
@@ -122,6 +139,15 @@ def interpolate_phi(phi, x, y, z):
     col3 = y_interpolate_phi(phi, x, j + 2, z)
 
     return cubic_interp(col0, col1, col2, col3, fy)
+
+@ti.func
+def interpolate_phi_grad(phi, p):
+    grad = ti.Vector([
+        interpolate_phi(phi, p + ti.Vector([dx, 0.0, 0.0])) - interpolate_phi(phi, p - ti.Vector([dx, 0.0, 0.0])),
+        interpolate_phi(phi, p + ti.Vector([0.0, dx, 0.0])) - interpolate_phi(phi, p - ti.Vector([0.0, dx, 0.0])),
+        interpolate_phi(phi, p + ti.Vector([0.0, 0.0, dx])) - interpolate_phi(phi, p - ti.Vector([0.0, 0.0, dx]))
+    ]) / (2.0 * dx)
+    return grad.normalized()
 
 @ti.kernel
 def init():
@@ -141,12 +167,14 @@ def init():
         p[i] = 0.0
 
     for i, j, k in ti.ndrange(N1, N2, N3):
-        if i < boundary_thickness or i >= N1 - boundary_thickness or \
-           j < boundary_thickness or j >= N2 - boundary_thickness or \
-           k < boundary_thickness or k >= N3 - boundary_thickness:
-            solid_phi[i, j, k] = -1.0
-        else:
-            solid_phi[i, j, k] = 1.0
+        x, y, z = (i + 0.5) * dx, (j + 0.5) * dx, (k + 0.5) * dx
+        solid_phi[i, j, k] = min(
+            x - boundary_thickness * dx,
+            (N1 - boundary_thickness) * dx - x,
+            z - boundary_thickness * dx,
+            (N3 - boundary_thickness) * dx - z,
+            y - boundary_thickness * dx
+        )
 
     for i, j, k in ti.ndrange(N1, N2, N3):
         # Example 1
@@ -426,9 +454,9 @@ def advect_levelset():
     for i, j, k in ti.ndrange(N1, N2, N3):
         pos = ti.Vector([(i + 0.5) * dx, (j + 0.5) * dx, (k + 0.5) * dx])
         back_pos = rk2_trace(pos.x, pos.y, pos.z, -dt)
-        val_back = interpolate_phi(phi, back_pos.x, back_pos.y, back_pos.z)
+        val_back = interpolate_phi(phi, back_pos)
         fwd_pos = rk2_trace(back_pos.x, back_pos.y, back_pos.z, dt)
-        val_fwd = interpolate_phi(phi, fwd_pos.x, fwd_pos.y, fwd_pos.z)
+        val_fwd = interpolate_phi(phi, fwd_pos)
         phi_1[i, j, k] = val_back + 0.5 * (phi[i, j, k] - val_fwd)
     for i, j, k in ti.ndrange(N1, N2, N3):
         phi[i, j, k] = phi_1[i, j, k]
@@ -685,6 +713,12 @@ def pressure_force_on_rigid(p):
         p_torque[None] += J_rot[i, j, k] * p[i, j, k]
 
 @ti.func
+def I_inverse_world(r):
+    r_cm = rotate(rigid.q[None], r)
+    res = rotate_inv(rigid.q[None], rigid.inertia_inv @ r_cm)
+    return res
+
+@ti.func
 def apply_A(p):
     for i, j, k in ti.ndrange(N1, N2, N3):
         val = A_diag[i, j, k] * p[i, j, k]
@@ -703,8 +737,7 @@ def apply_A(p):
         Ap[i, j, k] = val
 
     pressure_force_on_rigid(p)
-    alpha_cm = rigid.inertia_inv @ rotate(rigid.q[None], p_torque[None])
-    alpha_world = rotate_inv(rigid.q[None], alpha_cm)
+    alpha_world = I_inverse_world(p_torque[None])
     a = rigid.m_inv * p_force[None]
     for i, j, k in ti.ndrange(N1, N2, N3):
         Ap[i, j, k] += rho * (a @ J_trans[i, j, k])
@@ -820,8 +853,34 @@ def project():
     CG_solve()
     apply_pressure_gradient()
 
+@ti.func
+def handle_boundary_collision():
+    pos = ti.Vector([0.0, 0.0, 0.0])
+    collision_count = 0
+    for i in ti.grouped(rigid.vertices):
+        vertex_pos = rigid.x[None] + rotate(rigid.q[None], rigid.vertices[i])
+        if interpolate_phi(solid_phi, vertex_pos) < 0:
+            n = interpolate_phi_grad(solid_phi, vertex_pos)
+            if rigid.velocity_at_point(vertex_pos).dot(n) < 0:
+                collision_count += 1
+                pos += vertex_pos
+    if collision_count > 0:
+        pos = pos / collision_count
+        r = pos - rigid.x[None]
+        n = interpolate_phi_grad(solid_phi, pos)
+        vp = rigid.velocity_at_point(pos)
+        j = -(1 + restitution) * n.dot(vp) / (
+            I_inverse_world(r.cross(n)).dot(r.cross(n)) +
+            rigid.m_inv
+        )
+        rigid.v[None] += rigid.m_inv * j * n
+        rigid.omega[None] += I_inverse_world(r.cross(n)) * j
+        rigid.x[None] -= interpolate_phi(solid_phi, pos) * n
+
 @ti.kernel
 def substep_rigid():
+    handle_boundary_collision()
+
     pressure_force_on_rigid(p)
     p_force[None] *= dx * rho / dt
     p_torque[None] *= dx * rho / dt
@@ -895,6 +954,19 @@ def add_drop():
 init()
 init_volume()
 
+# Save rigid body initial configuration
+rigid_config = {
+    'obj_path': RIGID_OBJ_PATH,
+    'scale': RIGID_SCALE,
+    'initial_position': RIGID_INIT_POS,
+    'mass': RIGID_MASS,
+    'sdf_resolution': max(N1, N2, N3),
+    'grid_size': [N1, N2, N3],
+    'dx': dx
+}
+with open('rigid_states/config.json', 'w') as f:
+    json.dump(rigid_config, f, indent=4)
+
 window = ti.ui.Window("3D Fluid Simulation", (800, 800))
 canvas = window.get_canvas()
 canvas.set_background_color((0.2, 0.2, 0.2))
@@ -922,11 +994,16 @@ def render():
             particles[index // 3] = pos if (phi[i, j, k] < 0 and solid_phi[i, j, k] > 0) else ti.Vector([3, 3, 3])
 
 def export(count):
-    # import tomesh
-    # phi_np = phi.to_numpy()
-    # tomesh.main(phi_np, solid_phi, f"plys/mesh_{count:05d}.ply")
-    import numpy as np
+    # Export fluid levelset
     np.save(f"levelset/phi_{count:05d}", phi.to_numpy())
+    
+    # Export rigid body state
+    rigid_state = {
+        'position': rigid.x[None].to_numpy().tolist(),
+        'quaternion': rigid.q[None].to_numpy().tolist()
+    }
+    with open(f"rigid_states/state_{count:05d}.json", 'w') as f:
+        json.dump(rigid_state, f)
 
 frame_count = 0
 while window.running and frame_count < fps * 5:

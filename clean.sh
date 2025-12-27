@@ -1,1 +1,1 @@
-rm -rf ./output/* ./plys/* ./levelset/*
+rm -rf ./output/* ./plys/* ./levelset/* ./rigid_states/*

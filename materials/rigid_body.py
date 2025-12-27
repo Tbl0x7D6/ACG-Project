@@ -399,6 +399,7 @@ class RigidBody:
         cm /= area
         for i in ti.grouped(self.vertices):
             self.vertices[i] -= cm
+        # print("Center of Mass:", cm)
 
     @ti.kernel
     def _inertia(self) -> ti.types.matrix(3, 3, float):
