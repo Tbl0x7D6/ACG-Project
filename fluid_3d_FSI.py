@@ -4,15 +4,15 @@ import numpy as np
 import json
 import os
 
-ti.init(arch=ti.cuda, device_memory_fraction=0.95)
+ti.init(arch=ti.cuda, device_memory_fraction=0.3)
 
 USE_REFLECTION = False
 
 # Rigid body initial configuration
 RIGID_OBJ_PATH = "objects/bunny.obj"
-RIGID_SCALE = 0.3
-RIGID_INIT_POS = [0.5, 1.0, 0.5]
-RIGID_MASS = 15.0
+RIGID_SCALE = 0.2
+RIGID_INIT_POS = [0.6, 0.25, 0.5]
+RIGID_MASS = 10.0
 
 N1 = 256
 N2 = 256
@@ -27,10 +27,10 @@ boundary_thickness = 6
 
 dx = 1.0 / 256
 rho = 1000.0
-kappa = 10
+kappa = 30
 
 g = 9.81
-restitution = 0.5
+restitution = 0.8
 
 # Create directories for output
 os.makedirs("levelset", exist_ok=True)
@@ -192,9 +192,9 @@ def init():
         # phi[i, j, k] = min(bunny.interpolate_sdf(pos), 1.0)
 
         # Example 3, FSI
-        phi[i, j, k] = max(j * dx - 0.4, (boundary_thickness - j) * dx, 
-                        (i - N1 + boundary_thickness) * dx, (boundary_thickness - i) * dx,
-                        (k - N3 + boundary_thickness) * dx, (boundary_thickness - k) * dx)
+        phi[i, j, k] = max(j * dx - 0.8, 0.1 - j * dx,
+                        i * dx - 0.4, 0.1 - i * dx,
+                        k * dx - 0.8, 0.2 - k * dx)
 
 def init_volume():
     calc_volume()
@@ -1006,7 +1006,7 @@ def export(count):
         json.dump(rigid_state, f)
 
 frame_count = 0
-while window.running and frame_count < fps * 5:
+while window.running and frame_count < 500:
     for _ in range(substeps):
         substep()
         if counter % (fps // 2) == 0:
@@ -1032,7 +1032,7 @@ while window.running and frame_count < fps * 5:
     canvas.scene(scene)
     window.show()
     window.save_image("output/{:05d}.png".format(frame_count))
-    export(frame_count)
+    # export(frame_count)
     frame_count += 1
 
 

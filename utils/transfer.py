@@ -7,6 +7,8 @@ angular_positions = []
 
 # Center of mass in simulation space (same frame as rigid_body.py)
 CENTER_OF_MASS = (0.037939, 0.065785, -0.038762)
+# Center of Mass: [-0.025293, -0.043857, 0.025841]
+CENTER_OF_MASS = (0.025293, 0.043857, -0.025841)
 CENTER_OF_MASS_SCALED = tuple(c * 256.0 for c in CENTER_OF_MASS)
 
 # Quaternion multiply with layout (w, x, y, z) as used in rigid_body.py
@@ -40,7 +42,7 @@ Q_Z_90 = (math.cos(HALF_ANGLE), 0.0, 0.0, math.sin(HALF_ANGLE))
 Q_EXTRA = quat_mul(Q_Z_90, Q_X_90)  # Rz(90°) * Rx(90°) left-multiplied
 
 
-for i in range(600):
+for i in range(320):
     with open(f"../rigid_states/state_{i:05d}.json", "r") as f:
         data = json.load(f)
 
@@ -66,7 +68,8 @@ for i in range(600):
 
         # Apply the extra global rotations to both orientation and translation
         final_pos = rotate_vector(Q_EXTRA, final_translation)
-        final_pos = (final_pos[0], -final_pos[1], final_pos[2])
+        # !!!!!!!!!!!!!!!!  REMEMBER TO MINUS 256 FROM Y COORDINATE  !!!!!!!!!!!!!!!!
+        final_pos = (final_pos[0], final_pos[1] - 256, final_pos[2]) 
         final_q = quat_mul(Q_EXTRA, q_state)
 
         # roll (X), pitch (Y), yaw (Z) from quaternion (XYZ order) after extra rotations

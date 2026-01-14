@@ -14,11 +14,11 @@ theta = 0.3
 # cloth + bunny setup
 gravity = ti.Vector([0.0, -9.8, 0.0])
 Y = 1e4
-damping = 1e4
+damping = 5e4
 drag_damping = 3
-cloth_particle_mass = 1.0
+cloth_particle_mass = 0.003
 cloth_total_mass = cloth_particle_mass * n * n
-mu = 0.1
+mu = 0.2
 
 cloth = Cloth(
     k=Y,
@@ -30,9 +30,9 @@ cloth = Cloth(
     drag_damping=drag_damping,
 )
 
-bunny_mass = 800.0
+bunny_mass = 15.0
 bunny_start_height = 0.6
-bunny_initial_velocity = ti.Vector([0.0, -0.5, 0.0])
+bunny_initial_velocity = ti.Vector([0.0, 0.0, 0.0])
 bunny = RigidBody(
     "objects/bunny.obj",
     scale=0.3,
@@ -56,6 +56,15 @@ def init():
     for i, j in x:
         x[i, j] = [(i * quad_size - 0.5) * ti.cos(theta), - (i * quad_size - 0.5) * ti.sin(theta), j * quad_size - 0.5]
         v[i, j] = [0.0, 0.0, 0.0]
+    bunny.x[None] = ti.Vector([0.0, bunny_start_height, 0.0])
+    bunny.v[None] = bunny_initial_velocity
+    bunny.omega[None] = ti.Vector([0.0, 0.0, 0.0])
+    bunny.q[None] = ti.Vector([1.0, 0.0, 0.0, 0.0])
+    bunny.force[None] = gravity * bunny_mass
+    bunny.torque[None] = ti.Vector([0.0, 0.0, 0.0])
+    
+@ti.kernel
+def bunny_init():
     bunny.x[None] = ti.Vector([0.0, bunny_start_height, 0.0])
     bunny.v[None] = bunny_initial_velocity
     bunny.omega[None] = ti.Vector([0.0, 0.0, 0.0])
@@ -195,21 +204,37 @@ frame_count = 0
 # canvas.set_background_color((1, 1, 1))
 # scene = ti.ui.Scene()
 # camera = ti.ui.Camera()
-
-while True:
-    if frame_count > 100:
-        init()
-        current_t = 0.0
-        frame_count = 0
+init()
+while frame_count < 1100:
 
     for i in range(substeps):
         substep(current_t)
         current_t += dt
     update_vertices()
-    upsample(x, n, upsample_rate)
-    export(frame_count, y, new_n, bunny.x[None], bunny.q[None])
-    # export(frame_count, x, n, bunny.x[None], bunny.q[None])
+    if frame_count < 500:
+        bunny_init()
+    elif frame_count >= 600:
+        bunny_init()
+        upsample(x, n, upsample_rate)
+        export(frame_count - 500, y, new_n, bunny.x[None], bunny.q[None])
+    else:
+        upsample(x, n, upsample_rate)
+        export(frame_count - 500, y, new_n, bunny.x[None], bunny.q[None])
+        # export(frame_count - 500, x, n, bunny.x[None], bunny.q[None])
+        
+    if frame_count == 599:
+        path = f"/home/be/ACG-Project/cloth/final.txt"
+        with open(path, "w") as f:
+            f.write(f"{bunny.x[None][0]}, {bunny.x[None][1]}, {bunny.x[None][2]}, {bunny.q[None][0]}, {bunny.q[None][1]}, {bunny.q[None][2]}, {bunny.q[None][3]}\n")
+            f.write(f"{bunny.v[None][0]}, {bunny.v[None][1]}, {bunny.v[None][2]}, {bunny.omega[None][0]}, {bunny.omega[None][1]}, {bunny.omega[None][2]}\n")
     frame_count += 1
+
+
+# Pos:
+# (0.4787141084671021, 0.9940526485443115, 0.5012763405684386)
+
+# Quat:
+# (0.7191821932792664, -0.14212842285633087, 0.30610981583595276, -0.6073492765426636)
 
     # camera.position(1, 0.0, 3)
     # camera.lookat(0.0, 0.0, 0)
