@@ -6,6 +6,8 @@ A physics-based simulation framework for cloth, fluid dynamics, and rigid body i
 ![Taichi](https://img.shields.io/badge/Taichi-1.7.4-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
+https://github.com/user-attachments/assets/7266d25a-ee12-40f1-b0b3-c0e210388be1
+
 ## Features
 
 - **Cloth Simulation**: Mass-spring model with collision handling
@@ -18,39 +20,44 @@ A physics-based simulation framework for cloth, fluid dynamics, and rigid body i
 
 ```
 ACG-Project/
-├── cloth.py                 # Cloth draping on a fixed sphere
-├── cloth_bunny.py           # Cloth draping on a rotatable bunny mesh
-├── cloth_bunny_copy.py      # Cloth draping on a fixed bunny mesh (for Blender rendering)
-├── cloth_moving_bunny.py    # A bunny mesh falling onto a cloth
-├── cloth_trivial_rigid.py   # A sphere falling onto cloth
-├── fluid_2d.py              # 2D fluid simulation
-├── fluid_3d.py              # 3D fluid simulation
-├── fluid_2d_FSI.py          # 2D fluid with rigid body interaction
-├── fluid_3d_FSI.py          # 3D fluid with rigid body interaction
-├── rigid.py                 # A rotating rigid stick simulation
-├── reinit_levelset.py       # Level-set reinitialization utility
-├── materials/               # Core simulation modules
-│   ├── __init__.py
-│   ├── cloth.py             # Cloth class with mass-spring model
-│   ├── rigid_body.py        # RigidBody class with BVH collision
-│   └── load_mesh.py         # OBJ mesh loader
-├── utils/                   # Utility modules
-│   ├── transfer.py          # Data transfer utilities
-│   ├── Cloth2Mesh/          # Cloth to mesh conversion
-│   │   ├── clothtomesh.py   # Export cloth particles to PLY
-│   │   ├── blender_scripts.py
-│   │   └── change_scene.py
-│   └── SDF2Mesh/            # SDF to mesh conversion
-│       ├── tomesh.py        # Main mesh extraction pipeline
-│       ├── marching_cubes.py
-│       ├── taubin.py        # Taubin mesh smoothing
-│       ├── gaussian.py      # Gaussian smoothing
-│       ├── laplacian.py     # Laplacian smoothing
-│       ├── subdivision.py   # Loop subdivision
-│       ├── downsampling.py  # Mesh downsampling
-│       └── all2mesh.py      # Convert all frames to mesh
-├── objects/                 # 3D model files (OBJ format)
-├── pyproject.toml           # Project configuration
+├── cloth.py                                        # Cloth draping on a fixed sphere
+├── cloth_bunny.py                                  # Cloth draping on a rotatable bunny mesh
+├── cloth_bunny_copy.py                             # Cloth draping on a fixed bunny mesh (for Blender rendering)
+├── cloth_moving_bunny.py                           # A bunny mesh falling onto a cloth
+├── cloth_trivial_rigid.py                          # A sphere falling onto cloth
+├── fluid_2d.py                                     # 2D fluid simulation
+├── fluid_3d.py                                     # 3D fluid simulation
+├── fluid_2d_FSI.py                                 # 2D fluid with rigid body interaction
+├── fluid_3d_FSI.py                                 # 3D fluid with rigid body interaction
+├── rigid.py                                        # A rotating rigid stick simulation
+├── reinit_levelset.py                              # Level-set reinitialization utility
+├── materials/                                      # Core simulation modules
+│   ├── cloth.py                                    # Cloth class with mass-spring model
+│   ├── rigid_body.py                               # RigidBody class with BVH collision
+│   └── load_mesh.py                                # OBJ mesh loader
+├── render/                                         # Blender rendering files
+│   ├── Wood/                                       # Wood texture
+│   ├── fluid.blend                                 # Blender file for fluid rendering
+│   └── kloofendal_48d_partly_cloudy_puresky_4k.exr # HDRI environment map
+├── utils/                                          # Utility modules
+│   ├── transfer.py                                 # Data transfer utilities
+│   ├── Cloth2Mesh/                                 # Cloth to mesh conversion
+│   │   ├── clothtomesh.py                          # Export cloth particles to PLY
+│   │   ├── blender_scripts.py                      # Blender automation scripts
+│   │   └── change_scene.py                         # Link up rendering scene
+│   └── SDF2Mesh/                                   # SDF to mesh conversion
+│       ├── tomesh.py                               # Main mesh extraction pipeline
+│       ├── all2mesh.py                             # Convert all frames to mesh
+│       ├── run.py                                  # Run mesh conversion with multi-threading
+│       ├── marching_cubes.py                       # Marching Cubes algorithm
+│       ├── taubin.py                               # Taubin mesh smoothing
+│       ├── gaussian.py                             # Gaussian smoothing
+│       ├── laplacian.py                            # Laplacian smoothing
+│       ├── subdivision.py                          # Loop subdivision
+│       ├── downsampling.py                         # Mesh downsampling
+│       └── blender_scripts.py                      # Blender automation scripts for fluid mesh
+├── objects/                                        # 3D model files (OBJ format)
+├── pyproject.toml                                  # Project configuration
 └── README.md
 ```
 
@@ -162,7 +169,7 @@ python utils/transfer.py 0 100
 
 After obtaining the mesh files, you can use Blender to render the scenes and use FFmpeg to generate videos from the rendered frames.
 1. Follow the instructions in [Stop-motion-OBJ](https://github.com/neverhood311/Stop-motion-OBJ) to set up the Blender add-on for sequentially importing OBJ/PLY files.
-2. Open the provided Blender files ([cloth.blend](render/cloth.blend) for cloth simulation or [fluid.blend](render/fluid.blend) for fluid simulation) and set the start and end frames number according to the number of mesh files.
+2. Open the provided Blender files [fluid.blend](render/fluid.blend) and set the start and end frames number according to the number of mesh files.
 3. Load all the mesh files following the above add-on instructions. Then select the bunny object in the scene.
 4. Go to the `Scripting` tab in Blender, and run the provided script to automate setting up materials and positions. (This step is memory-intensive; ensure your system has sufficient resources.)
 5. Press `Ctrl + F12` to render the animation to frames. Rendered frames will be saved in `render/cache/` folder by default.
