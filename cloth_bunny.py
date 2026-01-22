@@ -6,7 +6,7 @@ os.makedirs("output", exist_ok=True)
 
 ti.init(arch=ti.cuda)
 
-window = ti.ui.Window("Cloth with Fixed Bunny", (800, 800))
+window = ti.ui.Window("Cloth with Rotatable Bunny", (800, 800))
 canvas = window.get_canvas()
 canvas.set_background_color((1, 1, 1))
 scene = ti.ui.Scene()

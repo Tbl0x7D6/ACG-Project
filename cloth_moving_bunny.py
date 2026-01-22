@@ -1,6 +1,7 @@
 import taichi as ti
 from utils.Cloth2Mesh.clothtomesh import export
 from materials import RigidBody, Cloth
+from pathlib import Path
 
 ti.init(arch=ti.cuda)
 
@@ -199,13 +200,41 @@ def init_mesh():
 init_mesh()
 frame_count = 0
 
-# window = ti.ui.Window("Cloth with Moving Bunny", (800, 800))
-# canvas = window.get_canvas()
-# canvas.set_background_color((1, 1, 1))
-# scene = ti.ui.Scene()
-# camera = ti.ui.Camera()
+if Path("cloth").exists():
+    import shutil
+    shutil.rmtree("cloth")
+Path("cloth").mkdir(parents=True, exist_ok=True)
+
+window = ti.ui.Window("Cloth with Moving Bunny", (800, 800))
+canvas = window.get_canvas()
+canvas.set_background_color((1, 1, 1))
+scene = ti.ui.Scene()
+camera = ti.ui.Camera()
 init()
-while frame_count < 1100:
+# while frame_count < 1100:
+
+#     for i in range(substeps):
+#         substep(current_t)
+#         current_t += dt
+#     update_vertices()
+#     if frame_count < 500:
+#         bunny_init()
+#     elif frame_count >= 600:
+#         bunny_init()
+#         upsample(x, n, upsample_rate)
+#         export(frame_count - 500, y, new_n, bunny.x[None], bunny.q[None])
+#     else:
+#         upsample(x, n, upsample_rate)
+#         export(frame_count - 500, y, new_n, bunny.x[None], bunny.q[None])
+#         # export(frame_count - 500, x, n, bunny.x[None], bunny.q[None])
+        
+#     if frame_count == 599:
+#         path = f"cloth/final.txt"
+#         with open(path, "w") as f:
+#             f.write(f"{bunny.x[None][0]}, {bunny.x[None][1]}, {bunny.x[None][2]}, {bunny.q[None][0]}, {bunny.q[None][1]}, {bunny.q[None][2]}, {bunny.q[None][3]}\n")
+#             f.write(f"{bunny.v[None][0]}, {bunny.v[None][1]}, {bunny.v[None][2]}, {bunny.omega[None][0]}, {bunny.omega[None][1]}, {bunny.omega[None][2]}\n")
+#     frame_count += 1
+while frame_count < 700:
 
     for i in range(substeps):
         substep(current_t)
@@ -213,20 +242,6 @@ while frame_count < 1100:
     update_vertices()
     if frame_count < 500:
         bunny_init()
-    elif frame_count >= 600:
-        bunny_init()
-        upsample(x, n, upsample_rate)
-        export(frame_count - 500, y, new_n, bunny.x[None], bunny.q[None])
-    else:
-        upsample(x, n, upsample_rate)
-        export(frame_count - 500, y, new_n, bunny.x[None], bunny.q[None])
-        # export(frame_count - 500, x, n, bunny.x[None], bunny.q[None])
-        
-    if frame_count == 599:
-        path = f"/home/be/ACG-Project/cloth/final.txt"
-        with open(path, "w") as f:
-            f.write(f"{bunny.x[None][0]}, {bunny.x[None][1]}, {bunny.x[None][2]}, {bunny.q[None][0]}, {bunny.q[None][1]}, {bunny.q[None][2]}, {bunny.q[None][3]}\n")
-            f.write(f"{bunny.v[None][0]}, {bunny.v[None][1]}, {bunny.v[None][2]}, {bunny.omega[None][0]}, {bunny.omega[None][1]}, {bunny.omega[None][2]}\n")
     frame_count += 1
 
 
@@ -236,13 +251,13 @@ while frame_count < 1100:
 # Quat:
 # (0.7191821932792664, -0.14212842285633087, 0.30610981583595276, -0.6073492765426636)
 
-    # camera.position(1, 0.0, 3)
-    # camera.lookat(0.0, 0.0, 0)
-    # scene.set_camera(camera)
+    camera.position(1, 0.0, 3)
+    camera.lookat(0.0, 0.0, 0)
+    scene.set_camera(camera)
 
-    # scene.point_light(pos=(0, 1, 2), color=(1, 1, 1))
-    # scene.ambient_light((0.5, 0.5, 0.5))
-    # bunny.render(scene)
-    # cloth.render(scene)
-    # canvas.scene(scene)
-    # window.show()
+    scene.point_light(pos=(0, 1, 2), color=(1, 1, 1))
+    scene.ambient_light((0.5, 0.5, 0.5))
+    bunny.render(scene)
+    cloth.render(scene)
+    canvas.scene(scene)
+    window.show()

@@ -1,5 +1,6 @@
 import taichi as ti
 from materials import RigidBody
+import os
 
 ti.init(arch=ti.cuda, device_memory_fraction=0.95)
 
@@ -19,6 +20,12 @@ boundary_thickness = 6
 dx = 1.0 / 256
 rho = 1000.0
 kappa = 30
+
+# Create directories for output
+os.makedirs("levelset", exist_ok=True)
+os.makedirs("rigid_states", exist_ok=True)
+os.makedirs("output", exist_ok=True)
+os.makedirs("plys", exist_ok=True)
 
 vx = ti.field(dtype=ti.f32, shape=(N1 + 1, N2, N3))
 vy = ti.field(dtype=ti.f32, shape=(N1, N2 + 1, N3))
@@ -799,13 +806,13 @@ def add_drop():
 init()
 init_volume()
 
-window = ti.ui.Window("3D Fluid Simulation", (800, 800))
-canvas = window.get_canvas()
-canvas.set_background_color((0.2, 0.2, 0.2))
-scene = ti.ui.Scene()
-camera = ti.ui.Camera()
+# window = ti.ui.Window("3D Fluid Simulation", (800, 800))
+# canvas = window.get_canvas()
+# canvas.set_background_color((0.2, 0.2, 0.2))
+# scene = ti.ui.Scene()
+# camera = ti.ui.Camera()
 
-particles = ti.Vector.field(3, dtype=ti.f32, shape=(N1 * N2 * N3 // 3 + 1))
+# particles = ti.Vector.field(3, dtype=ti.f32, shape=(N1 * N2 * N3 // 3 + 1))
 
 current_t = 0.0
 
@@ -817,13 +824,13 @@ def gaussian_blur(phi_1: ti.template(), phi: ti.template()):
         else:
             phi_1[i, j, k] = phi[i, j, k]
 
-@ti.kernel
-def render():
-    for i, j, k in ti.ndrange(N1, N2, N3):
-        pos = ti.Vector([i, j, k]) * dx
-        index = i * N2 * N3 + j * N3 + k
-        if index % 3 == 0:
-            particles[index // 3] = pos if (phi[i, j, k] < 0 and solid_phi[i, j, k] > 0) else ti.Vector([3, 3, 3])
+# @ti.kernel
+# def render():
+#     for i, j, k in ti.ndrange(N1, N2, N3):
+#         pos = ti.Vector([i, j, k]) * dx
+#         index = i * N2 * N3 + j * N3 + k
+#         if index % 3 == 0:
+#             particles[index // 3] = pos if (phi[i, j, k] < 0 and solid_phi[i, j, k] > 0) else ti.Vector([3, 3, 3])
 
 def export(count):
     # import tomesh
@@ -833,7 +840,8 @@ def export(count):
     np.save(f"levelset/phi_{count:05d}", phi.to_numpy())
 
 frame_count = 0
-while window.running and frame_count < fps * 3:
+# while window.running and frame_count < fps * 3:
+while frame_count < fps * 3:
     for _ in range(substeps):
         substep()
         if counter % (fps // 2) == 0:
@@ -845,19 +853,19 @@ while window.running and frame_count < fps * 3:
 
     print("[INFO] Frame: ", frame_count)
     print("[DEBUG] Volume: ", current_volume[None])
-    render()
+    # render()
 
-    camera.position(1.8, 1.8, 1.8)
-    camera.lookat(0, 0, 0)
-    scene.set_camera(camera)
-    scene.ambient_light((0.5, 0.5, 0.5))
-    scene.point_light(pos=(3.0, 3.0, 3.0), color=(1.0, 1.0, 1.0))
+    # camera.position(1.8, 1.8, 1.8)
+    # camera.lookat(0, 0, 0)
+    # scene.set_camera(camera)
+    # scene.ambient_light((0.5, 0.5, 0.5))
+    # scene.point_light(pos=(3.0, 3.0, 3.0), color=(1.0, 1.0, 1.0))
 
-    scene.particles(particles, radius=0.005, color=(0.2, 0.2, 0.5))
+    # scene.particles(particles, radius=0.005, color=(0.2, 0.2, 0.5))
     
-    canvas.scene(scene)
-    window.show()
-    window.save_image("output/{:05d}.png".format(frame_count))
+    # canvas.scene(scene)
+    # window.show()
+    # window.save_image("output/{:05d}.png".format(frame_count))
     export(frame_count)
     frame_count += 1
 

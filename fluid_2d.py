@@ -1,7 +1,13 @@
 import taichi as ti
+from pathlib import Path
 
 # ti.init(arch=ti.cuda, device_memory_fraction=0.95)
 ti.init(arch=ti.cuda)
+
+if Path("output").exists():
+    import shutil
+    shutil.rmtree("output")
+Path("output").mkdir(parents=True, exist_ok=True)
 
 USE_REFLECTION = False
 

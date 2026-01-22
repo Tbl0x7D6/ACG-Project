@@ -95,7 +95,7 @@ def write_pos_ori(path: Path, position: ti.template(), orientation: ti.template(
         f.write(f"{final_pos_trans[0]}, {final_pos_trans[1]}, {final_pos_trans[2]}, {roll}, {pitch}, {yaw}\n")
 
 def export(frame_count: int, x: ti.template(), n: int, position: ti.template(), orientation: ti.template()):
-    path1 = f"/home/be/ACG-Project/cloth/cloth_{frame_count:05d}.ply"
-    path2 = f"/home/be/ACG-Project/cloth/bunny_pos_ori.txt"
+    path1 = f"cloth/cloth_{frame_count:05d}.ply"
+    path2 = f"cloth/bunny_pos_ori.txt"
     write_ply(Path(path1), x, n)
     write_pos_ori(Path(path2), position, orientation)

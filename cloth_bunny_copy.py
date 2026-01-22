@@ -2,6 +2,7 @@ import taichi as ti
 import os
 from materials import RigidBody, Cloth
 from utils.Cloth2Mesh.clothtomesh import export
+from pathlib import Path
 
 os.makedirs("output", exist_ok=True)
 
@@ -19,11 +20,11 @@ upsample_rate = 2
 new_n = (n - 1) * upsample_rate + 1
 y = ti.Vector.field(3, dtype=x.dtype, shape=(new_n, new_n))
 
-# window = ti.ui.Window("Cloth with Fixed Bunny", (800, 800))
-# canvas = window.get_canvas()
-# canvas.set_background_color((1, 1, 1))
-# scene = ti.ui.Scene()
-# camera = ti.ui.Camera()
+window = ti.ui.Window("Cloth with Fixed Bunny", (800, 800))
+canvas = window.get_canvas()
+canvas.set_background_color((1, 1, 1))
+scene = ti.ui.Scene()
+camera = ti.ui.Camera()
 
 @ti.func
 def sample(src, i, j):
@@ -93,6 +94,11 @@ def quat_mul(v1, v2):
         v1.x * v2.w + v2.x * v1.w + v1.y * v2.z - v1.z * v2.y
     ])
 
+if Path("cloth").exists():
+    import shutil
+    shutil.rmtree("cloth")
+Path("cloth").mkdir(parents=True, exist_ok=True)
+
 current_t = 0.0
 frame_count = 0
 while True: 
@@ -114,18 +120,18 @@ while True:
     bunny.omega[None] = 2 * (bunny.q[None] - last_q).yzw / (dt * substeps)
     
     
-    upsample(x, n, upsample_rate)
-    export(frame_count, y, new_n, bunny.x[None], bunny.q[None])
-    # export(frame_count, x, n, bunny.x[None], bunny.q[None])
-    frame_count += 1
-
-    # camera.position(2, 2, 2)
-    # camera.lookat(0, 0, 0)
-    # scene.set_camera(camera)
-    # scene.point_light(pos=(4, 4, 4), color=(1, 1, 1))
-    # bunny.render(scene)
-    # cloth.render(scene)
-    # canvas.scene(scene)
-    # # window.save_image("output/{:05d}.png".format(frame_count))
-    # window.show()
+    # upsample(x, n, upsample_rate)
+    # export(frame_count, y, new_n, bunny.x[None], bunny.q[None])
+    # # export(frame_count, x, n, bunny.x[None], bunny.q[None])
     # frame_count += 1
+
+    camera.position(2, 2, 2)
+    camera.lookat(0, 0, 0)
+    scene.set_camera(camera)
+    scene.point_light(pos=(4, 4, 4), color=(1, 1, 1))
+    bunny.render(scene)
+    cloth.render(scene)
+    canvas.scene(scene)
+    # window.save_image("output/{:05d}.png".format(frame_count))
+    window.show()
+    frame_count += 1

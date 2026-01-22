@@ -967,13 +967,13 @@ rigid_config = {
 with open('rigid_states/config.json', 'w') as f:
     json.dump(rigid_config, f, indent=4)
 
-window = ti.ui.Window("3D Fluid Simulation", (800, 800))
-canvas = window.get_canvas()
-canvas.set_background_color((0.2, 0.2, 0.2))
-scene = ti.ui.Scene()
-camera = ti.ui.Camera()
+# window = ti.ui.Window("3D Fluid Simulation", (800, 800))
+# canvas = window.get_canvas()
+# canvas.set_background_color((0.2, 0.2, 0.2))
+# scene = ti.ui.Scene()
+# camera = ti.ui.Camera()
 
-particles = ti.Vector.field(3, dtype=ti.f32, shape=(N1 * N2 * N3 // 3 + 1))
+# particles = ti.Vector.field(3, dtype=ti.f32, shape=(N1 * N2 * N3 // 3 + 1))
 
 current_t = 0.0
 
@@ -1006,7 +1006,8 @@ def export(count):
         json.dump(rigid_state, f)
 
 frame_count = 0
-while window.running and frame_count < 500:
+# while window.running and frame_count < 500:
+while frame_count < 500:
     for _ in range(substeps):
         substep()
         if counter % (fps // 2) == 0:
@@ -1018,21 +1019,21 @@ while window.running and frame_count < 500:
 
     print("[INFO] Frame: ", frame_count)
     print("[DEBUG] Volume: ", current_volume[None])
-    render()
+    # render()
 
-    camera.position(1.8, 1.8, 1.8)
-    camera.lookat(0, 0, 0)
-    scene.set_camera(camera)
-    scene.ambient_light((0.5, 0.5, 0.5))
-    scene.point_light(pos=(3.0, 3.0, 3.0), color=(1.0, 1.0, 1.0))
+    # camera.position(1.8, 1.8, 1.8)
+    # camera.lookat(0, 0, 0)
+    # scene.set_camera(camera)
+    # scene.ambient_light((0.5, 0.5, 0.5))
+    # scene.point_light(pos=(3.0, 3.0, 3.0), color=(1.0, 1.0, 1.0))
 
-    scene.particles(particles, radius=0.005, color=(0.2, 0.2, 0.5))
-    rigid.render(scene)
+    # scene.particles(particles, radius=0.005, color=(0.2, 0.2, 0.5))
+    # rigid.render(scene)
     
-    canvas.scene(scene)
-    window.show()
-    window.save_image("output/{:05d}.png".format(frame_count))
-    # export(frame_count)
+    # canvas.scene(scene)
+    # window.show()
+    # window.save_image("output/{:05d}.png".format(frame_count))
+    export(frame_count)
     frame_count += 1
 
 
