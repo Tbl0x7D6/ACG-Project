@@ -13,7 +13,7 @@ https://github.com/user-attachments/assets/bcc62bbd-2327-4c81-9f00-52e7cb95cb3f
 - **Cloth Simulation**: Mass-spring model with collision handling
 - **Fluid Simulation**: Level-set based fluid solver with volume conservation
 - **Rigid Body Dynamics**: Collision detection using BVH acceleration
-- **Fluid-Structure Interaction (FSI)**: Two-way coupling between fluid and rigid bodies
+- **Fluid-Structure Interaction (FSI)**: Strong coupling between fluid and rigid bodies
 - **Mesh Export**: Convert simulation results to mesh files (PLY format) for Blender rendering
 
 ## Project Structure
@@ -63,8 +63,9 @@ ACG-Project/
 
 ## Prerequisites
 
-- **Python**: 3.11 or higher
-- **CUDA**: NVIDIA GPU with CUDA support (optional, for faster performance)
+- **uv**: 0.9.8
+- **Vulkan SDK**: 1.4.313.0.
+- **GPU Driver / CUDA**: 535.274.02, CUDA 12.2.
 - **Blender**: 4.0+ (optional, for mesh rendering)
 - **FFmpeg**: (optional, for video generation from frames)
 
@@ -79,13 +80,8 @@ cd ACG-Project
 
 ### 2. Install Dependencies
 
-The project requires the following packages:
-- `taichi`
-- `scikit-image`
-
-Install with:
 ```bash
-pip install taichi scikit-image
+uv sync
 ```
 
 ## Usage
@@ -96,58 +92,58 @@ Only part of the simulation scripts support real-time rendering by taichi GUI, a
 
 (*Real-time*) Simple rotating rigid stick simulation:
 ```bash
-python rigid.py
+uv run rigid.py
 ```
 
 ### Cloth Simulation
 
 (*Real-time*) Simulation of a cloth draping over a fixed sphere:
 ```bash
-python cloth.py
+uv run cloth.py
 ```
 
 (*Real-time*) Simulation of a sphere falling onto a cloth:
 ```bash
-python cloth_trivial_rigid.py
+uv run cloth_trivial_rigid.py
 ```
 
 (*Real-time*) Cloth draping on a bunny mesh (supporting real-time interaction by rotating the bunny with the mouse):
 ```bash
-python cloth_bunny.py
+uv run cloth_bunny.py
 ```
 
 (*Real-time*) Simulation of cloth draping on a fixed bunny mesh:
 ```bash
-python cloth_bunny_copy.py
+uv run cloth_bunny_copy.py
 ```
 
 (*Real-time*) Simulation of a bunny mesh falling onto a cloth:
 ```bash
-python cloth_moving_bunny.py
+uv run cloth_moving_bunny.py
 ```
 
 ### Fluid Simulation
 
 (*Real-time*) 2D fluid simulation. Screenshot of each frame will be saved to `output/` folder:
 ```bash
-python fluid_2d.py
+uv run fluid_2d.py
 ```
 
 (*Not real-time*) 3D fluid simulation. Fluid levelset data will be saved to `levelset/` folder:
 ```bash
-python fluid_3d.py
+uv run fluid_3d.py
 ```
 
 ### Fluid-Structure Interaction
 
 (*Real-time*) 2D FSI with a moving bunny. Screenshot of each frame will be saved to `output/` folder:
 ```bash
-python fluid_2d_FSI.py
+uv run fluid_2d_FSI.py
 ```
 
 (*Not real-time*) 3D FSI simulation with a bunny mesh. Fluid levelset data will be saved to `levelset/` folder and rigid body states will be saved to `rigid_states/` folder:
 ```bash
-python fluid_3d_FSI.py
+uv run fluid_3d_FSI.py
 ```
 
 ### Mesh Export
@@ -156,12 +152,12 @@ The simulation can export mesh files for rendering:
 
 1. **Fluid Mesh**: use the provided utility to convert levelset data to mesh files. Run the following command to convert all frames of levelset data to mesh files (0 and 100 are the start and end frame indices as an example):
 ```bash
-python utils/SDF2Mesh/all2mesh.py levelset plys 0 100
+uv run utils/SDF2Mesh/all2mesh.py levelset plys 0 100
 # This step is extremely time-consuming. Please wait patiently for the process to complete.
 ```
 2. **Rigid Body Mesh**: this step only aggregates rigid body state into a single file, and blender scripts are used to load the position and orientation data for rendering afterwards. Run the following command to aggregate rigid body states (output aggregated file will be `rigid_states/final.txt`, 0 and 100 are the start and end frame indices as an example):
 ```bash
-python utils/transfer.py 0 100
+uv run utils/transfer.py 0 100
 ```
 
 ### Rendering \& Video Generation
