@@ -6,7 +6,7 @@ A physics-based simulation framework for cloth, fluid dynamics, and rigid body i
 ![Taichi](https://img.shields.io/badge/Taichi-1.7.4-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-https://github.com/user-attachments/assets/7266d25a-ee12-40f1-b0b3-c0e210388be1
+https://github.com/user-attachments/assets/bcc62bbd-2327-4c81-9f00-52e7cb95cb3f
 
 ## Features
 
@@ -154,13 +154,12 @@ python fluid_3d_FSI.py
 
 The simulation can export mesh files for rendering:
 
-1. **Cloth Mesh**: already included in cloth simulation scripts. Output PLY files are saved in `output/` folder.
-2. **Fluid Mesh**: use the provided utility to convert levelset data to mesh files. Run the following command to convert all frames of levelset data to mesh files (0 and 100 are the start and end frame indices as an example):
+1. **Fluid Mesh**: use the provided utility to convert levelset data to mesh files. Run the following command to convert all frames of levelset data to mesh files (0 and 100 are the start and end frame indices as an example):
 ```bash
 python utils/SDF2Mesh/all2mesh.py levelset plys 0 100
 # This step is extremely time-consuming. Please wait patiently for the process to complete.
 ```
-3. **Rigid Body Mesh**: this step only aggregates rigid body state into a single file, and blender scripts are used to load the position and orientation data for rendering afterwards. Run the following command to aggregate rigid body states (output aggregated file will be `rigid_states/final.txt`, 0 and 100 are the start and end frame indices as an example):
+2. **Rigid Body Mesh**: this step only aggregates rigid body state into a single file, and blender scripts are used to load the position and orientation data for rendering afterwards. Run the following command to aggregate rigid body states (output aggregated file will be `rigid_states/final.txt`, 0 and 100 are the start and end frame indices as an example):
 ```bash
 python utils/transfer.py 0 100
 ```
